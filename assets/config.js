@@ -1,1 +1,1 @@
-window.GQ_CONFIG={PAYMENT_LINK:"",FORM_ENDPOINT:"",DEMO_MODE:true};
+window.GQ_CONFIG={API_BASE:"https://geburtstagsquest-api.onrender.com"};
