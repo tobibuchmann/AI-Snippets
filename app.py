@@ -124,8 +124,9 @@ def create_order():
     if missing:
         return jsonify({"error": "missing_fields", "fields": missing}), 400
 
-    if not accepted(data.get("consent")):
-        return jsonify({"error": "processing_consent_required"}), 400
+    privacy_acknowledged = accepted(data.get("privacy_notice_acknowledged")) or accepted(data.get("consent"))
+    if not privacy_acknowledged:
+        return jsonify({"error": "privacy_notice_acknowledgement_required"}), 400
     if not accepted(data.get("digital_content_consent")):
         return jsonify({"error": "digital_content_consent_required"}), 400
 
@@ -147,7 +148,9 @@ def create_order():
         "forbidden_locations": str(data.get("forbidden_locations", ""))[:1000],
         "final_location": str(data.get("final_location", ""))[:300],
         "notes": str(data.get("notes", ""))[:2000],
-        "processing_consent": True,
+        "privacy_notice_acknowledged": True,
+        "privacy_notice_acknowledged_at": created,
+        "privacy_notice_version": "2026-09-30-v1",
         "digital_content_consent": True,
         "digital_content_consent_at": created,
         "digital_content_consent_version": "2026-09-30-v1",
