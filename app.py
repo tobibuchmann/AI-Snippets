@@ -21,7 +21,11 @@ except Exception:
 app = Flask(__name__)
 SITE_URL = os.getenv("SITE_URL", "https://geburtstagsquest.onrender.com").rstrip("/")
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", SITE_URL)
-STRIPE_PAYMENT_LINK = os.getenv("STRIPE_PAYMENT_LINK", "").strip()
+PAYMENTS_MODE = os.getenv("PAYMENTS_MODE", "test").strip().lower()
+if PAYMENTS_MODE not in {"test", "live"}:
+    PAYMENTS_MODE = "test"
+STRIPE_TEST_PAYMENT_LINK = os.getenv("STRIPE_TEST_PAYMENT_LINK", "").strip()
+STRIPE_LIVE_PAYMENT_LINK = os.getenv("STRIPE_LIVE_PAYMENT_LINK", "").strip()
 CORS(app, resources={r"/api/*": {"origins": [ALLOWED_ORIGIN, SITE_URL]}})
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/geburtstagsquest-orders.db")
@@ -79,12 +83,29 @@ def set_status(order_id, status, stripe_session_id=None):
         })
 
 
+def selected_payment_link():
+    if PAYMENTS_MODE == "live":
+        return STRIPE_LIVE_PAYMENT_LINK
+    return STRIPE_TEST_PAYMENT_LINK
+
+
+def stripe_secret_mode():
+    secret = os.getenv("STRIPE_SECRET_KEY", "")
+    if secret.startswith("sk_live_"):
+        return "live"
+    if secret.startswith("sk_test_"):
+        return "test"
+    return "unknown" if secret else "none"
+
+
 @app.get("/health")
 def health():
     return jsonify({
         "ok": True,
+        "payments_mode": PAYMENTS_MODE,
         "stripe_secret_configured": bool(os.getenv("STRIPE_SECRET_KEY")),
-        "stripe_payment_link_configured": bool(STRIPE_PAYMENT_LINK),
+        "stripe_secret_mode": stripe_secret_mode(),
+        "stripe_payment_link_configured": bool(selected_payment_link()),
         "stripe_webhook_configured": bool(os.getenv("STRIPE_WEBHOOK_SECRET")),
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "database": "postgres" if "postgresql" in DATABASE_URL else "temporary_sqlite",
@@ -143,8 +164,9 @@ def create_checkout():
     if not order:
         return jsonify({"error": "order_not_found"}), 404
 
-    if stripe is not None and os.getenv("STRIPE_SECRET_KEY"):
-        stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
+    secret = os.getenv("STRIPE_SECRET_KEY", "")
+    if stripe is not None and secret and stripe_secret_mode() == PAYMENTS_MODE:
+        stripe.api_key = secret
         session = stripe.checkout.Session.create(
             mode="payment",
             customer_email=order["email"],
@@ -166,17 +188,18 @@ def create_checkout():
             locale="de",
         )
         set_status(order_id, "checkout_created", session.id)
-        return jsonify({"checkout_url": session.url, "mode": "checkout_session"})
+        return jsonify({"checkout_url": session.url, "mode": "checkout_session", "payments_mode": PAYMENTS_MODE})
 
-    if STRIPE_PAYMENT_LINK:
+    payment_link = selected_payment_link()
+    if payment_link:
         query = urlencode({
             "client_reference_id": order_id,
             "prefilled_email": order["email"],
         })
-        separator = "&" if "?" in STRIPE_PAYMENT_LINK else "?"
-        checkout_url = STRIPE_PAYMENT_LINK + separator + query
+        separator = "&" if "?" in payment_link else "?"
+        checkout_url = payment_link + separator + query
         set_status(order_id, "checkout_created")
-        return jsonify({"checkout_url": checkout_url, "mode": "payment_link"})
+        return jsonify({"checkout_url": checkout_url, "mode": "payment_link", "payments_mode": PAYMENTS_MODE})
 
     return jsonify({"error": "payments_not_configured"}), 503
 
@@ -207,9 +230,10 @@ def stripe_webhook():
 
 
 def verify_paid(order_id, session_id):
-    if stripe is None or not os.getenv("STRIPE_SECRET_KEY"):
+    secret = os.getenv("STRIPE_SECRET_KEY", "")
+    if stripe is None or not secret or stripe_secret_mode() != PAYMENTS_MODE:
         return False, "payment_verification_not_configured"
-    stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
+    stripe.api_key = secret
     session = stripe.checkout.Session.retrieve(session_id)
     session_order_id = (session.metadata or {}).get("order_id") or getattr(session, "client_reference_id", None)
     if session_order_id != order_id:
