@@ -179,7 +179,11 @@ def send_email(to_email, child_name, pdf_bytes, order_id):
     }
     response = requests.post(
         "https://api.resend.com/emails",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Idempotency-Key": f"geburtstagsquest-delivery-{order_id}",
+        },
         json=payload,
         timeout=30,
     )
