@@ -3,8 +3,9 @@
   if(!form)return;
 
   function setBusy(button,busy){
+    if(!button.dataset.defaultText) button.dataset.defaultText=button.textContent;
     button.disabled=busy;
-    button.textContent=busy?'Bestellung wird vorbereitet …':'Zur sicheren Zahlung – 39 €';
+    button.textContent=busy?'Bestellung wird vorbereitet …':button.dataset.defaultText;
   }
 
   form.addEventListener('submit',async(e)=>{
