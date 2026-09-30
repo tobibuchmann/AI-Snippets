@@ -105,7 +105,7 @@ Ausgabe in sauberem Markdown:
 
 def generate_quest(payload):
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+    model = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
     response = client.responses.create(model=model, input=build_prompt(payload))
     return response.output_text
 
@@ -210,12 +210,31 @@ def fulfill(order_id, session_id=None):
     return {"status": "delivered", "email_id": email_result.get("id")}
 
 
+def stripe_webhook_secrets():
+    values = [
+        os.getenv("FULFILLMENT_STRIPE_WEBHOOK_SECRET", ""),
+        os.getenv("FULFILLMENT_STRIPE_WEBHOOK_SECRET_TEST", ""),
+    ]
+    return [value for value in values if value]
+
+
+def verify_stripe_event(raw, signature):
+    last_error = None
+    for secret in stripe_webhook_secrets():
+        try:
+            return stripe.Webhook.construct_event(raw, signature, secret)
+        except Exception as exc:
+            last_error = exc
+    raise last_error or ValueError("no_webhook_secret")
+
+
 @app.get("/health")
 def health():
     return jsonify({
         "ok": True,
         "database_configured": bool(DATABASE_URL),
-        "stripe_webhook_configured": bool(os.getenv("FULFILLMENT_STRIPE_WEBHOOK_SECRET")),
+        "stripe_live_webhook_configured": bool(os.getenv("FULFILLMENT_STRIPE_WEBHOOK_SECRET")),
+        "stripe_test_webhook_configured": bool(os.getenv("FULFILLMENT_STRIPE_WEBHOOK_SECRET_TEST")),
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "resend_configured": bool(os.getenv("RESEND_API_KEY") and os.getenv("RESEND_FROM_EMAIL")),
     })
@@ -223,14 +242,13 @@ def health():
 
 @app.post("/stripe-webhook")
 def stripe_webhook():
-    secret = os.getenv("FULFILLMENT_STRIPE_WEBHOOK_SECRET", "")
-    if stripe is None or not secret:
+    if stripe is None or not stripe_webhook_secrets():
         return jsonify({"error": "webhook_not_configured"}), 503
 
     raw = request.get_data(cache=False, as_text=False)
     signature = request.headers.get("Stripe-Signature", "")
     try:
-        event = stripe.Webhook.construct_event(raw, signature, secret)
+        event = verify_stripe_event(raw, signature)
     except Exception:
         return jsonify({"error": "invalid_signature"}), 400
 
