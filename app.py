@@ -2,6 +2,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -20,6 +21,7 @@ except Exception:
 app = Flask(__name__)
 SITE_URL = os.getenv("SITE_URL", "https://geburtstagsquest.onrender.com").rstrip("/")
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", SITE_URL)
+STRIPE_PAYMENT_LINK = os.getenv("STRIPE_PAYMENT_LINK", "").strip()
 CORS(app, resources={r"/api/*": {"origins": [ALLOWED_ORIGIN, SITE_URL]}})
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/geburtstagsquest-orders.db")
@@ -81,7 +83,8 @@ def set_status(order_id, status, stripe_session_id=None):
 def health():
     return jsonify({
         "ok": True,
-        "stripe_configured": bool(os.getenv("STRIPE_SECRET_KEY")),
+        "stripe_secret_configured": bool(os.getenv("STRIPE_SECRET_KEY")),
+        "stripe_payment_link_configured": bool(STRIPE_PAYMENT_LINK),
         "stripe_webhook_configured": bool(os.getenv("STRIPE_WEBHOOK_SECRET")),
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "database": "postgres" if "postgresql" in DATABASE_URL else "temporary_sqlite",
@@ -134,37 +137,48 @@ def create_order():
 
 @app.post("/api/create-checkout")
 def create_checkout():
-    if stripe is None or not os.getenv("STRIPE_SECRET_KEY"):
-        return jsonify({"error": "payments_not_configured"}), 503
-
     data = request.get_json(silent=True) or {}
     order_id = str(data.get("order_id", ""))
     order = get_order(order_id)
     if not order:
         return jsonify({"error": "order_not_found"}), 404
 
-    stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
-    session = stripe.checkout.Session.create(
-        mode="payment",
-        customer_email=order["email"],
-        line_items=[{
-            "price_data": {
-                "currency": "eur",
-                "unit_amount": 3900,
-                "product_data": {
-                    "name": "GeburtstagsQuest",
-                    "description": "Personalisiertes Kindergeburtstags-Abenteuer mit 8 Stationen als PDF",
+    if stripe is not None and os.getenv("STRIPE_SECRET_KEY"):
+        stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            customer_email=order["email"],
+            line_items=[{
+                "price_data": {
+                    "currency": "eur",
+                    "unit_amount": 3900,
+                    "product_data": {
+                        "name": "GeburtstagsQuest",
+                        "description": "Personalisiertes Kindergeburtstags-Abenteuer mit 8 Stationen als PDF",
+                    },
                 },
-            },
-            "quantity": 1,
-        }],
-        metadata={"order_id": order_id},
-        success_url=f"{SITE_URL}/zahlung-erfolgreich.html?session_id={{CHECKOUT_SESSION_ID}}&order_id={order_id}",
-        cancel_url=f"{SITE_URL}/bestellen.html?zahlung=abgebrochen",
-        locale="de",
-    )
-    set_status(order_id, "checkout_created", session.id)
-    return jsonify({"checkout_url": session.url})
+                "quantity": 1,
+            }],
+            metadata={"order_id": order_id},
+            client_reference_id=order_id,
+            success_url=f"{SITE_URL}/zahlung-erfolgreich.html?session_id={{CHECKOUT_SESSION_ID}}&order_id={order_id}",
+            cancel_url=f"{SITE_URL}/bestellen.html?zahlung=abgebrochen",
+            locale="de",
+        )
+        set_status(order_id, "checkout_created", session.id)
+        return jsonify({"checkout_url": session.url, "mode": "checkout_session"})
+
+    if STRIPE_PAYMENT_LINK:
+        query = urlencode({
+            "client_reference_id": order_id,
+            "prefilled_email": order["email"],
+        })
+        separator = "&" if "?" in STRIPE_PAYMENT_LINK else "?"
+        checkout_url = STRIPE_PAYMENT_LINK + separator + query
+        set_status(order_id, "checkout_created")
+        return jsonify({"checkout_url": checkout_url, "mode": "payment_link"})
+
+    return jsonify({"error": "payments_not_configured"}), 503
 
 
 @app.post("/api/stripe-webhook")
@@ -185,7 +199,7 @@ def stripe_webhook():
 
     if event.get("type") == "checkout.session.completed":
         session = event["data"]["object"]
-        order_id = (session.get("metadata") or {}).get("order_id")
+        order_id = (session.get("metadata") or {}).get("order_id") or session.get("client_reference_id")
         if order_id and session.get("payment_status") == "paid":
             set_status(order_id, "paid", session.get("id"))
 
@@ -194,10 +208,11 @@ def stripe_webhook():
 
 def verify_paid(order_id, session_id):
     if stripe is None or not os.getenv("STRIPE_SECRET_KEY"):
-        return False, "payments_not_configured"
+        return False, "payment_verification_not_configured"
     stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
     session = stripe.checkout.Session.retrieve(session_id)
-    if session.metadata.get("order_id") != order_id:
+    session_order_id = (session.metadata or {}).get("order_id") or getattr(session, "client_reference_id", None)
+    if session_order_id != order_id:
         return False, "order_mismatch"
     if session.payment_status != "paid":
         return False, "not_paid"
@@ -211,7 +226,7 @@ def checkout_status():
     session_id = request.args.get("session_id", "")
     ok, result = verify_paid(order_id, session_id)
     if not ok:
-        code = 503 if result == "payments_not_configured" else 402
+        code = 503 if result == "payment_verification_not_configured" else 402
         return jsonify({"paid": False, "error": result}), code
     return jsonify({"paid": True, "order_id": order_id})
 
