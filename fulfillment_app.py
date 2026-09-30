@@ -61,6 +61,25 @@ def update_order(order_id, status, generated_text=None, session_id=None):
         })
 
 
+def claim_generation(order_id, session_id=None):
+    with engine.begin() as conn:
+        row = conn.execute(text("""
+            UPDATE orders
+            SET status='generating',
+                stripe_session_id=COALESCE(:session_id, stripe_session_id),
+                updated_at=:updated_at
+            WHERE id=:id
+              AND generated_text IS NULL
+              AND status NOT IN ('generating', 'delivered')
+            RETURNING id
+        """), {
+            "session_id": session_id,
+            "updated_at": now_iso(),
+            "id": order_id,
+        }).first()
+        return row is not None
+
+
 def build_prompt(payload):
     return f"""Du bist Autor und Spieldesigner für hochwertige, sichere Kindergeburtstage.
 Erstelle ein vollständig spielbares, personalisiertes Geburtstags-Abenteuer mit genau 8 Stationen und etwa 45–60 Minuten Spielzeit.
@@ -163,10 +182,10 @@ def send_email(to_email, child_name, pdf_bytes, order_id):
     payload = {
         "from": from_email,
         "to": [to_email],
-        "subject": f"Deine GeburtstagsQuest für {child_name}",
+        "subject": "Deine GeburtstagsQuest ist fertig",
         "html": (
             f"<p>Hallo,</p>"
-            f"<p>deine personalisierte GeburtstagsQuest für <strong>{html.escape(child_name)}</strong> ist fertig.</p>"
+            f"<p>deine personalisierte GeburtstagsQuest ist fertig.</p>"
             f"<p>Im Anhang findest du die druckfertige PDF mit Geschichte, 8 Stationen, Lösungen, Finale und Urkunde.</p>"
             f"<p>Viel Spaß bei eurem Abenteuer!</p>"
             f"<p>GeburtstagsQuest</p>"
@@ -201,8 +220,21 @@ def fulfill(order_id, session_id=None):
     payload = json.loads(order["payload"])
     generated = order.get("generated_text")
     if not generated:
-        generated = generate_quest(payload)
-        update_order(order_id, "generated", generated_text=generated, session_id=session_id)
+        if not claim_generation(order_id, session_id=session_id):
+            latest = get_order(order_id)
+            if latest and latest.get("generated_text"):
+                generated = latest["generated_text"]
+            elif latest and latest.get("status") == "generating":
+                return {"status": "generation_in_progress"}
+            else:
+                raise RuntimeError("generation_claim_failed")
+        else:
+            try:
+                generated = generate_quest(payload)
+                update_order(order_id, "generated", generated_text=generated, session_id=session_id)
+            except Exception:
+                update_order(order_id, "fulfillment_failed", session_id=session_id)
+                raise
 
     pdf_bytes = markdown_to_pdf_bytes(f"GeburtstagsQuest für {payload['child_name']}", generated)
     email_result = send_email(order["email"], payload["child_name"], pdf_bytes, order_id)
