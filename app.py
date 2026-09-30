@@ -98,6 +98,10 @@ def stripe_secret_mode():
     return "unknown" if secret else "none"
 
 
+def accepted(value):
+    return str(value or "").strip().lower() in {"yes", "on", "true", "1"}
+
+
 @app.get("/health")
 def health():
     return jsonify({
@@ -120,6 +124,11 @@ def create_order():
     if missing:
         return jsonify({"error": "missing_fields", "fields": missing}), 400
 
+    if not accepted(data.get("consent")):
+        return jsonify({"error": "processing_consent_required"}), 400
+    if not accepted(data.get("digital_content_consent")):
+        return jsonify({"error": "digital_content_consent_required"}), 400
+
     locations = data.get("locations") or []
     if not isinstance(locations, list) or not locations:
         return jsonify({"error": "locations_required"}), 400
@@ -138,6 +147,10 @@ def create_order():
         "forbidden_locations": str(data.get("forbidden_locations", ""))[:1000],
         "final_location": str(data.get("final_location", ""))[:300],
         "notes": str(data.get("notes", ""))[:2000],
+        "processing_consent": True,
+        "digital_content_consent": True,
+        "digital_content_consent_at": created,
+        "digital_content_consent_version": "2026-09-30-v1",
     }
 
     with engine.begin() as conn:
