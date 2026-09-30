@@ -24,7 +24,6 @@
     const api=(cfg.API_BASE||'').replace(/\/$/,'');
     if(!api){alert('Der Bestellservice ist noch nicht konfiguriert.');return;}
 
-    localStorage.setItem('geburtstagsquest_order',JSON.stringify(data));
     setBusy(button,true);
 
     try{
