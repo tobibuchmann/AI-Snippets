@@ -82,6 +82,7 @@ def health():
     return jsonify({
         "ok": True,
         "stripe_configured": bool(os.getenv("STRIPE_SECRET_KEY")),
+        "stripe_webhook_configured": bool(os.getenv("STRIPE_WEBHOOK_SECRET")),
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "database": "postgres" if "postgresql" in DATABASE_URL else "temporary_sqlite",
     })
@@ -166,6 +167,31 @@ def create_checkout():
     return jsonify({"checkout_url": session.url})
 
 
+@app.post("/api/stripe-webhook")
+def stripe_webhook():
+    if stripe is None or not os.getenv("STRIPE_WEBHOOK_SECRET"):
+        return jsonify({"error": "webhook_not_configured"}), 503
+
+    payload = request.get_data(cache=False, as_text=False)
+    signature = request.headers.get("Stripe-Signature", "")
+    try:
+        event = stripe.Webhook.construct_event(
+            payload,
+            signature,
+            os.environ["STRIPE_WEBHOOK_SECRET"],
+        )
+    except Exception:
+        return jsonify({"error": "invalid_signature"}), 400
+
+    if event.get("type") == "checkout.session.completed":
+        session = event["data"]["object"]
+        order_id = (session.get("metadata") or {}).get("order_id")
+        if order_id and session.get("payment_status") == "paid":
+            set_status(order_id, "paid", session.get("id"))
+
+    return jsonify({"received": True})
+
+
 def verify_paid(order_id, session_id):
     if stripe is None or not os.getenv("STRIPE_SECRET_KEY"):
         return False, "payments_not_configured"
@@ -221,7 +247,7 @@ Finale: {payload['final_location']}
 Hinweise: {payload['notes']}
 
 Vorgaben:
-- Geburtstagkind zentral und positiv einbinden.
+- Geburtstagskind zentral und positiv einbinden.
 - Genau 8 Stationen; jede führt eindeutig zur nächsten.
 - Mix aus Logik, Beobachtung, Bewegung, Kooperation, Codes sowie Wort-/Zahlenrätseln.
 - Nur erlaubte Orte verwenden.
