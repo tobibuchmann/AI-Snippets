@@ -5,3 +5,5 @@ SQLAlchemy>=2.0,<3
 psycopg[binary]>=3.2,<4
 stripe>=11,<14
 openai>=1.60,<2
+reportlab>=4,<5
+requests>=2.32,<3
