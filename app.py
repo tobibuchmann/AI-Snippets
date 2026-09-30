@@ -1,0 +1,261 @@
+import json
+import os
+import uuid
+from datetime import datetime, timezone
+
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from sqlalchemy import create_engine, text
+
+try:
+    import stripe
+except Exception:
+    stripe = None
+
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
+
+app = Flask(__name__)
+SITE_URL = os.getenv("SITE_URL", "https://geburtstagsquest.onrender.com").rstrip("/")
+ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", SITE_URL)
+CORS(app, resources={r"/api/*": {"origins": [ALLOWED_ORIGIN, SITE_URL]}})
+
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/geburtstagsquest-orders.db")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
+
+def init_db():
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS orders (
+                id VARCHAR(64) PRIMARY KEY,
+                email VARCHAR(320) NOT NULL,
+                child_name VARCHAR(80) NOT NULL,
+                payload TEXT NOT NULL,
+                status VARCHAR(40) NOT NULL,
+                stripe_session_id VARCHAR(255),
+                generated_text TEXT,
+                created_at VARCHAR(64) NOT NULL,
+                updated_at VARCHAR(64) NOT NULL
+            )
+        """))
+
+
+init_db()
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def get_order(order_id):
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT * FROM orders WHERE id=:id"), {"id": order_id}).mappings().first()
+        return dict(row) if row else None
+
+
+def set_status(order_id, status, stripe_session_id=None):
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE orders
+            SET status=:status,
+                stripe_session_id=COALESCE(:stripe_session_id, stripe_session_id),
+                updated_at=:updated_at
+            WHERE id=:id
+        """), {
+            "status": status,
+            "stripe_session_id": stripe_session_id,
+            "updated_at": now_iso(),
+            "id": order_id,
+        })
+
+
+@app.get("/health")
+def health():
+    return jsonify({
+        "ok": True,
+        "stripe_configured": bool(os.getenv("STRIPE_SECRET_KEY")),
+        "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "database": "postgres" if "postgresql" in DATABASE_URL else "temporary_sqlite",
+    })
+
+
+@app.post("/api/orders")
+def create_order():
+    data = request.get_json(silent=True) or {}
+    required = ["child_name", "age", "group_size", "theme", "play_area", "email"]
+    missing = [k for k in required if not str(data.get(k, "")).strip()]
+    if missing:
+        return jsonify({"error": "missing_fields", "fields": missing}), 400
+
+    locations = data.get("locations") or []
+    if not isinstance(locations, list) or not locations:
+        return jsonify({"error": "locations_required"}), 400
+
+    order_id = "gq_" + uuid.uuid4().hex[:20]
+    created = now_iso()
+    payload = {
+        "child_name": str(data.get("child_name", ""))[:80],
+        "age": str(data.get("age", ""))[:10],
+        "group_size": str(data.get("group_size", ""))[:10],
+        "interests": str(data.get("interests", ""))[:1000],
+        "theme": str(data.get("theme", ""))[:120],
+        "play_area": str(data.get("play_area", ""))[:120],
+        "locations": [str(x)[:120] for x in locations[:20]],
+        "other_locations": str(data.get("other_locations", ""))[:1000],
+        "forbidden_locations": str(data.get("forbidden_locations", ""))[:1000],
+        "final_location": str(data.get("final_location", ""))[:300],
+        "notes": str(data.get("notes", ""))[:2000],
+    }
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO orders (id, email, child_name, payload, status, created_at, updated_at)
+            VALUES (:id, :email, :child_name, :payload, 'created', :created_at, :updated_at)
+        """), {
+            "id": order_id,
+            "email": str(data.get("email", ""))[:320],
+            "child_name": payload["child_name"],
+            "payload": json.dumps(payload, ensure_ascii=False),
+            "created_at": created,
+            "updated_at": created,
+        })
+
+    return jsonify({"order_id": order_id, "status": "created"})
+
+
+@app.post("/api/create-checkout")
+def create_checkout():
+    if stripe is None or not os.getenv("STRIPE_SECRET_KEY"):
+        return jsonify({"error": "payments_not_configured"}), 503
+
+    data = request.get_json(silent=True) or {}
+    order_id = str(data.get("order_id", ""))
+    order = get_order(order_id)
+    if not order:
+        return jsonify({"error": "order_not_found"}), 404
+
+    stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
+    session = stripe.checkout.Session.create(
+        mode="payment",
+        customer_email=order["email"],
+        line_items=[{
+            "price_data": {
+                "currency": "eur",
+                "unit_amount": 3900,
+                "product_data": {
+                    "name": "GeburtstagsQuest",
+                    "description": "Personalisiertes Kindergeburtstags-Abenteuer mit 8 Stationen als PDF",
+                },
+            },
+            "quantity": 1,
+        }],
+        metadata={"order_id": order_id},
+        success_url=f"{SITE_URL}/zahlung-erfolgreich.html?session_id={{CHECKOUT_SESSION_ID}}&order_id={order_id}",
+        cancel_url=f"{SITE_URL}/bestellen.html?zahlung=abgebrochen",
+        locale="de",
+    )
+    set_status(order_id, "checkout_created", session.id)
+    return jsonify({"checkout_url": session.url})
+
+
+def verify_paid(order_id, session_id):
+    if stripe is None or not os.getenv("STRIPE_SECRET_KEY"):
+        return False, "payments_not_configured"
+    stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
+    session = stripe.checkout.Session.retrieve(session_id)
+    if session.metadata.get("order_id") != order_id:
+        return False, "order_mismatch"
+    if session.payment_status != "paid":
+        return False, "not_paid"
+    set_status(order_id, "paid", session_id)
+    return True, session
+
+
+@app.get("/api/checkout-status")
+def checkout_status():
+    order_id = request.args.get("order_id", "")
+    session_id = request.args.get("session_id", "")
+    ok, result = verify_paid(order_id, session_id)
+    if not ok:
+        code = 503 if result == "payments_not_configured" else 402
+        return jsonify({"paid": False, "error": result}), code
+    return jsonify({"paid": True, "order_id": order_id})
+
+
+@app.post("/api/generate")
+def generate():
+    if OpenAI is None or not os.getenv("OPENAI_API_KEY"):
+        return jsonify({"error": "generation_not_configured"}), 503
+
+    data = request.get_json(silent=True) or {}
+    order_id = str(data.get("order_id", ""))
+    session_id = str(data.get("session_id", ""))
+    ok, result = verify_paid(order_id, session_id)
+    if not ok:
+        return jsonify({"error": result}), 402
+
+    order = get_order(order_id)
+    payload = json.loads(order["payload"])
+    prompt = f"""Du bist Autor und Spieldesigner für hochwertige, sichere Kindergeburtstage.
+Erstelle ein vollständig spielbares, personalisiertes Geburtstags-Abenteuer mit genau 8 Stationen und etwa 45–60 Minuten Spielzeit.
+
+Daten:
+Geburtstagskind: {payload['child_name']}
+Alter: {payload['age']}
+Gruppengröße: {payload['group_size']}
+Interessen: {payload['interests']}
+Thema: {payload['theme']}
+Spielbereich: {payload['play_area']}
+Nutzbare Orte: {', '.join(payload['locations'])}
+Weitere Orte: {payload['other_locations']}
+Tabu-Orte: {payload['forbidden_locations']}
+Finale: {payload['final_location']}
+Hinweise: {payload['notes']}
+
+Vorgaben:
+- Geburtstagkind zentral und positiv einbinden.
+- Genau 8 Stationen; jede führt eindeutig zur nächsten.
+- Mix aus Logik, Beobachtung, Bewegung, Kooperation, Codes sowie Wort-/Zahlenrätseln.
+- Nur erlaubte Orte verwenden.
+- Kein Feuer, keine Elektrizität, keine Straße, kein gefährliches Klettern, keine scharfen Gegenstände, keine verschlossenen Räume.
+- Keine bekannten Franchise-Figuren oder geschützten Welten.
+- Keine Lebensmittel als zwingende Mechanik.
+- Lösungen eindeutig und altersgerecht.
+
+Ausgabe in sauberem Markdown:
+1. Titel
+2. Kurzbeschreibung für Eltern
+3. Materialliste
+4. Vorbereitungstabelle
+5. Einstiegsgeschichte (max. 300 Wörter)
+6. Station 1–8 jeweils mit Geschichte, Kinderkarte, Aufgabe, Elternlösung, nächstem Ort, Tipp
+7. Finale
+8. Persönliche Urkunde
+9. 10-Minuten-Zusatzspiel
+10. Endprüfung der Route und Lösungen.
+"""
+
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+    response = client.responses.create(model=model, input=prompt)
+    generated = response.output_text
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE orders SET generated_text=:generated_text, status='generated', updated_at=:updated_at
+            WHERE id=:id
+        """), {"generated_text": generated, "updated_at": now_iso(), "id": order_id})
+
+    return jsonify({"order_id": order_id, "status": "generated", "content": generated})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
