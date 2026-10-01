@@ -11,4 +11,11 @@ _spec.loader.exec_module(_legacy)
 from .premium import install
 
 install(_legacy)
+
+try:
+    from qa_preview import install_preview
+    install_preview(_legacy)
+except Exception:
+    _legacy.app.logger.exception("QA preview setup failed")
+
 app = _legacy.app
