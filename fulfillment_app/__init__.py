@@ -8,9 +8,11 @@ _legacy = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = _legacy
 _spec.loader.exec_module(_legacy)
 
-from .premium import install
+from .premium import install as install_premium
+from .quality_v2 import install as install_quality_v2
 
-install(_legacy)
+install_premium(_legacy)
+install_quality_v2(_legacy)
 
 try:
     from qa_preview import install_preview
