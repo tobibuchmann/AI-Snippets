@@ -71,7 +71,7 @@ def _demo_quest(payload):
             "duration_minutes": 5,
         })
     return {
-        "title": f"{child}s {theme_title}",
+        "title": f"{child}: {theme_title}",
         "subtitle": "Eine ganz persönliche GeburtstagsQuest",
         "parent_summary": "Ein druckfertiges Abenteuer mit acht Stationen für sieben Kinder.",
         "setup_minutes": 15,
