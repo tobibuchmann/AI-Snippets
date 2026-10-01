@@ -184,9 +184,14 @@ def markdown_to_pdf_bytes(title, content):
 
 
 def send_email(to_email, pdf_bytes, order_id):
+    from_email = os.environ["RESEND_FROM_EMAIL"]
+    recipient = to_email
+    if "@resend.dev" in from_email and os.getenv("RESEND_TEST_RECIPIENT"):
+        recipient = os.environ["RESEND_TEST_RECIPIENT"]
+
     payload = {
-        "from": os.environ["RESEND_FROM_EMAIL"],
-        "to": [to_email],
+        "from": from_email,
+        "to": [recipient],
         "subject": "Deine GeburtstagsQuest ist fertig",
         "html": (
             "<p>Hallo,</p>"
