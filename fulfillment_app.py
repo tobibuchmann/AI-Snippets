@@ -12,7 +12,7 @@ import requests
 from flask import Flask, jsonify, request
 from openai import OpenAI
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -51,6 +51,7 @@ LAVENDER = colors.HexColor("#EEE6F7")
 INK = colors.HexColor("#2B2830")
 MUTED = colors.HexColor("#706A76")
 WHITE = colors.white
+
 
 QUEST_SCHEMA = {
     "type": "object",
@@ -95,7 +96,7 @@ QUEST_SCHEMA = {
                 },
                 "required": [
                     "number", "title", "story", "child_card", "task",
-                    "solution", "next_location", "hint", "duration_minutes"
+                    "solution", "next_location", "hint", "duration_minutes",
                 ],
             },
         },
@@ -115,7 +116,7 @@ QUEST_SCHEMA = {
     "required": [
         "title", "subtitle", "parent_summary", "materials", "preparation",
         "intro_story", "stations", "finale", "certificate_text",
-        "bonus_game", "route_check"
+        "bonus_game", "route_check",
     ],
 }
 
@@ -132,7 +133,9 @@ def get_order(order_id):
     if not engine:
         return None
     with engine.begin() as conn:
-        row = conn.execute(text("SELECT * FROM orders WHERE id=:id"), {"id": order_id}).mappings().first()
+        row = conn.execute(
+            text("SELECT * FROM orders WHERE id=:id"), {"id": order_id}
+        ).mappings().first()
         return dict(row) if row else None
 
 
@@ -192,7 +195,6 @@ def claim_generation(order_id, session_id=None):
 def build_prompt(payload):
     locations = payload.get("locations") or []
     return f"""Du bist Autor, Rätseldesigner und Qualitätsprüfer für hochwertige Kindergeburtstage.
-
 Erstelle eine vollständig spielbare, personalisierte GeburtstagsQuest für Eltern mit GENAU 8 Stationen und insgesamt ca. 45–60 Minuten Spielzeit.
 
 DATEN
@@ -280,23 +282,61 @@ def footer(canvas, doc):
     canvas.restoreState()
 
 
-def build_styles():
+def styles():
     base = getSampleStyleSheet()
     return {
-        "cover_brand": ParagraphStyle("cover_brand", parent=base["Heading2"], fontName="Helvetica-Bold", fontSize=13, leading=16, textColor=GOLD, alignment=TA_CENTER, spaceAfter=12),
-        "cover_title": ParagraphStyle("cover_title", parent=base["Title"], fontName="Helvetica-Bold", fontSize=28, leading=32, textColor=PURPLE_DARK, alignment=TA_CENTER, spaceAfter=12),
-        "cover_sub": ParagraphStyle("cover_sub", parent=base["BodyText"], fontSize=13, leading=18, textColor=INK, alignment=TA_CENTER, spaceAfter=16),
-        "h1": ParagraphStyle("h1", parent=base["Heading1"], fontName="Helvetica-Bold", fontSize=20, leading=24, textColor=PURPLE_DARK, spaceBefore=4, spaceAfter=10),
-        "h2": ParagraphStyle("h2", parent=base["Heading2"], fontName="Helvetica-Bold", fontSize=14, leading=18, textColor=PURPLE, spaceBefore=8, spaceAfter=6),
-        "body": ParagraphStyle("body", parent=base["BodyText"], fontSize=10.5, leading=15, textColor=INK, spaceAfter=7),
-        "small": ParagraphStyle("small", parent=base["BodyText"], fontSize=8.8, leading=12, textColor=MUTED, spaceAfter=4),
-        "certificate_title": ParagraphStyle("certificate_title", parent=base["Title"], fontName="Helvetica-Bold", fontSize=26, leading=31, textColor=PURPLE_DARK, alignment=TA_CENTER, spaceAfter=14),
-        "certificate_body": ParagraphStyle("certificate_body", parent=base["BodyText"], fontSize=14, leading=21, textColor=INK, alignment=TA_CENTER, spaceAfter=12),
+        "cover_brand": ParagraphStyle(
+            "cover_brand", parent=base["Heading2"], fontName="Helvetica-Bold",
+            fontSize=13, leading=16, textColor=GOLD, alignment=TA_CENTER, spaceAfter=12,
+        ),
+        "cover_title": ParagraphStyle(
+            "cover_title", parent=base["Title"], fontName="Helvetica-Bold",
+            fontSize=28, leading=32, textColor=PURPLE_DARK, alignment=TA_CENTER, spaceAfter=12,
+        ),
+        "cover_sub": ParagraphStyle(
+            "cover_sub", parent=base["BodyText"], fontSize=13, leading=18,
+            textColor=INK, alignment=TA_CENTER, spaceAfter=16,
+        ),
+        "h1": ParagraphStyle(
+            "h1", parent=base["Heading1"], fontName="Helvetica-Bold",
+            fontSize=20, leading=24, textColor=PURPLE_DARK, spaceBefore=4, spaceAfter=10,
+        ),
+        "h2": ParagraphStyle(
+            "h2", parent=base["Heading2"], fontName="Helvetica-Bold",
+            fontSize=14, leading=18, textColor=PURPLE, spaceBefore=8, spaceAfter=6,
+        ),
+        "body": ParagraphStyle(
+            "body", parent=base["BodyText"], fontSize=10.5, leading=15,
+            textColor=INK, spaceAfter=7,
+        ),
+        "small": ParagraphStyle(
+            "small", parent=base["BodyText"], fontSize=8.8, leading=12,
+            textColor=MUTED, spaceAfter=4,
+        ),
+        "card_title": ParagraphStyle(
+            "card_title", parent=base["Heading3"], fontName="Helvetica-Bold",
+            fontSize=12, leading=15, textColor=PURPLE_DARK, spaceAfter=5,
+        ),
+        "card_body": ParagraphStyle(
+            "card_body", parent=base["BodyText"], fontSize=11, leading=16,
+            textColor=INK, spaceAfter=2,
+        ),
+        "certificate_title": ParagraphStyle(
+            "certificate_title", parent=base["Title"], fontName="Helvetica-Bold",
+            fontSize=26, leading=31, textColor=PURPLE_DARK, alignment=TA_CENTER, spaceAfter=14,
+        ),
+        "certificate_body": ParagraphStyle(
+            "certificate_body", parent=base["BodyText"], fontSize=14, leading=21,
+            textColor=INK, alignment=TA_CENTER, spaceAfter=12,
+        ),
     }
 
 
 def labeled_box(label, content, st, background=LAVENDER):
-    table = Table([[Paragraph(f"<b>{safe(label)}</b><br/>{safe(content)}", st["body"])]], colWidths=[168 * mm])
+    data = [[
+        Paragraph(f"<b>{safe(label)}</b><br/>{safe(content)}", st["body"])
+    ]]
+    table = Table(data, colWidths=[168 * mm])
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), background),
         ("BOX", (0, 0), (-1, -1), 0.7, PURPLE),
@@ -310,8 +350,14 @@ def labeled_box(label, content, st, background=LAVENDER):
 
 def structured_pdf_bytes(quest, payload):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm, topMargin=18 * mm, bottomMargin=18 * mm, title=str(quest.get("title") or "GeburtstagsQuest"), author="GeburtstagsQuest")
-    st = build_styles()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        rightMargin=18 * mm, leftMargin=18 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title=str(quest.get("title") or "GeburtstagsQuest"),
+        author="GeburtstagsQuest",
+    )
+    st = styles()
     story = []
 
     story += [
@@ -339,7 +385,11 @@ def structured_pdf_bytes(quest, payload):
         ("TOPPADDING", (0, 0), (-1, -1), 6),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
-    story += [meta_table, Spacer(1, 12 * mm), Paragraph("Dein persönliches Abenteuer: vorbereiten, ausdrucken, verstecken – und losspielen.", st["cover_sub"]), PageBreak()]
+    story += [meta_table, Spacer(1, 12 * mm)]
+    story += [Paragraph(
+        "Dein persönliches Abenteuer: vorbereiten, ausdrucken, verstecken – und losspielen.",
+        st["cover_sub"],
+    ), PageBreak()]
 
     story += [
         Paragraph("Schnellstart für Eltern", st["h1"]),
@@ -347,10 +397,17 @@ def structured_pdf_bytes(quest, payload):
         HRFlowable(width="100%", thickness=1, color=GOLD, spaceBefore=4, spaceAfter=10),
         Paragraph("Material", st["h2"]),
     ]
-    for item in quest.get("materials") or []:
+    materials = quest.get("materials") or []
+    for item in materials:
         story.append(Paragraph("• " + safe(item), st["body"]))
+
     story += [Spacer(1, 4), Paragraph("Vorbereitung", st["h2"])]
-    prep_rows = [[Paragraph("<b>Station</b>", st["small"]), Paragraph("<b>Ort</b>", st["small"]), Paragraph("<b>Verstecken / vorbereiten</b>", st["small"]), Paragraph("<b>Material</b>", st["small"])]]
+    prep_rows = [[
+        Paragraph("<b>Station</b>", st["small"]),
+        Paragraph("<b>Ort</b>", st["small"]),
+        Paragraph("<b>Verstecken / vorbereiten</b>", st["small"]),
+        Paragraph("<b>Material</b>", st["small"]),
+    ]]
     for row in quest.get("preparation") or []:
         prep_rows.append([
             Paragraph(str(row.get("station", "")), st["small"]),
@@ -362,6 +419,7 @@ def structured_pdf_bytes(quest, payload):
     prep_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), PURPLE),
         ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+        ("BACKGROUND", (0, 1), (-1, -1), colors.white),
         ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D8D0DE")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 5),
@@ -375,15 +433,22 @@ def structured_pdf_bytes(quest, payload):
         Paragraph("Einstiegsgeschichte", st["h1"]),
         labeled_box("Zum Vorlesen", quest.get("intro_story"), st, background=WARM),
         Spacer(1, 8 * mm),
-        Paragraph("Tipp: Lies die Geschichte erst vor, wenn alle Kinder bereit sind. Danach startet direkt Station 1.", st["small"]),
+        Paragraph(
+            "Tipp: Lies die Geschichte erst vor, wenn alle Kinder bereit sind. Danach startet direkt Station 1.",
+            st["small"],
+        ),
         PageBreak(),
     ]
 
     stations = quest.get("stations") or []
     for station in stations:
+        number = station.get("number", "")
         story += [
-            Paragraph(f"Station {station.get('number', '')}: {safe(station.get('title'))}", st["h1"]),
-            Table([[Paragraph(f"<b>Nächster Ort</b><br/>{safe(station.get('next_location'))}", st["small"]), Paragraph(f"<b>Zeit</b><br/>{safe(station.get('duration_minutes'))} Min.", st["small"])]], colWidths=[120 * mm, 48 * mm], style=TableStyle([
+            Paragraph(f"Station {number}: {safe(station.get('title'))}", st["h1"]),
+            Table([[
+                Paragraph(f"<b>Ort</b><br/>{safe(station.get('next_location'))}", st["small"]),
+                Paragraph(f"<b>Zeit</b><br/>{safe(station.get('duration_minutes'))} Min.", st["small"]),
+            ]], colWidths=[120 * mm, 48 * mm], style=TableStyle([
                 ("BACKGROUND", (0, 0), (-1, -1), WARM),
                 ("BOX", (0, 0), (-1, -1), 0.5, GOLD),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -419,7 +484,12 @@ def structured_pdf_bytes(quest, payload):
     ]
 
     story += [Paragraph("Lösungsübersicht", st["h1"])]
-    solution_rows = [[Paragraph("<b>Nr.</b>", st["small"]), Paragraph("<b>Station</b>", st["small"]), Paragraph("<b>Lösung</b>", st["small"]), Paragraph("<b>Weiter zu</b>", st["small"])]]
+    solution_rows = [[
+        Paragraph("<b>Nr.</b>", st["small"]),
+        Paragraph("<b>Station</b>", st["small"]),
+        Paragraph("<b>Lösung</b>", st["small"]),
+        Paragraph("<b>Weiter zu</b>", st["small"]),
+    ]]
     for s in stations:
         solution_rows.append([
             Paragraph(str(s.get("number", "")), st["small"]),
@@ -451,11 +521,13 @@ def structured_pdf_bytes(quest, payload):
         Spacer(1, 14 * mm),
         Paragraph("Mission geschafft · Rätsel gelöst · Schatz gefunden", st["cover_sub"]),
         Spacer(1, 20 * mm),
-        Table([["____________________________", "____________________________"], ["Datum", "Unterschrift"]], colWidths=[70 * mm, 70 * mm], hAlign="CENTER", style=TableStyle([
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("TEXTCOLOR", (0, 1), (-1, 1), MUTED),
-            ("FONTSIZE", (0, 1), (-1, 1), 8),
-        ])),
+        Table([["____________________________", "____________________________"],
+               ["Datum", "Unterschrift"]], colWidths=[70 * mm, 70 * mm], hAlign="CENTER",
+              style=TableStyle([
+                  ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                  ("TEXTCOLOR", (0, 1), (-1, 1), MUTED),
+                  ("FONTSIZE", (0, 1), (-1, 1), 8),
+              ])),
     ]
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
@@ -464,8 +536,13 @@ def structured_pdf_bytes(quest, payload):
 
 def legacy_markdown_pdf_bytes(title, content):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm, topMargin=18 * mm, bottomMargin=18 * mm, title=title, author="GeburtstagsQuest")
-    st = build_styles()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        rightMargin=18 * mm, leftMargin=18 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title=title, author="GeburtstagsQuest",
+    )
+    st = styles()
     story = [Paragraph(safe(title), st["cover_title"]), Spacer(1, 6)]
     for raw_line in content.splitlines():
         line = raw_line.strip()
@@ -491,7 +568,9 @@ def quest_pdf_bytes(payload, generated):
     quest = parse_quest(generated)
     if quest:
         return structured_pdf_bytes(quest, payload)
-    return legacy_markdown_pdf_bytes(f"GeburtstagsQuest für {payload.get('child_name', '')}", generated)
+    return legacy_markdown_pdf_bytes(
+        f"GeburtstagsQuest für {payload.get('child_name', '')}", generated
+    )
 
 
 def send_email(to_email, pdf_bytes, order_id):
@@ -506,7 +585,8 @@ def send_email(to_email, pdf_bytes, order_id):
         "html": (
             "<p>Hallo,</p>"
             "<p>deine personalisierte GeburtstagsQuest ist fertig.</p>"
-            "<p>Im Anhang findest du das druckfertige Elternheft mit Geschichte, 8 Stationen, Lösungen, Finale und Urkunde.</p>"
+            "<p>Im Anhang findest du das druckfertige Elternheft mit Geschichte, "
+            "8 Stationen, Lösungen, Finale und Urkunde.</p>"
             "<p>Viel Spaß bei eurem Abenteuer!</p>"
             "<p>GeburtstagsQuest</p>"
         ),
@@ -575,7 +655,8 @@ def run_fulfillment(order_id, session_id=None):
 
 
 def queue_fulfillment(order_id, session_id=None):
-    threading.Thread(target=run_fulfillment, args=(order_id, session_id), daemon=True).start()
+    thread = threading.Thread(target=run_fulfillment, args=(order_id, session_id), daemon=True)
+    thread.start()
 
 
 def stripe_webhook_secrets():
@@ -680,7 +761,28 @@ def admin_regenerate(order_id):
     return jsonify({"queued": True, "order_id": order_id})
 
 
+def regenerate_legacy_test_order():
+    time.sleep(12)
+    order_id = os.getenv("TEST_REGENERATE_ORDER", "").strip()
+    if not order_id or not engine:
+        return
+    try:
+        order = get_order(order_id)
+        if not order:
+            app.logger.warning("Test regeneration skipped: order not found")
+            return
+        if order.get("generated_text") and parse_quest(order["generated_text"]):
+            app.logger.warning("Test regeneration skipped: structured quest already present")
+            return
+        app.logger.warning("Starting one-time structured test regeneration for order=%s", order_id)
+        if reset_order_for_regeneration(order_id):
+            queue_fulfillment(order_id)
+    except Exception:
+        app.logger.exception("One-time test regeneration failed")
+
+
 threading.Thread(target=recover_stale_jobs, daemon=True).start()
+threading.Thread(target=regenerate_legacy_test_order, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
