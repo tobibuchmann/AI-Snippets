@@ -26,9 +26,11 @@ if not hasattr(_premium_pdf, "structured_pdf_bytes"):
 
 from .premium import install as install_premium
 from .quality_v2 import install as install_quality_v2
+from .theme_art import install as install_theme_art
 
 install_premium(_legacy)
 install_quality_v2(_legacy)
+install_theme_art(_legacy)
 
 try:
     from qa_preview import install_preview
