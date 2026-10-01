@@ -211,7 +211,8 @@ def send_email(to_email, pdf_bytes, order_id):
         json=payload,
         timeout=60,
     )
-    response.raise_for_status()
+    if not response.ok:
+        raise RuntimeError(f"Resend HTTP {response.status_code}: {response.text[:500]}")
     return response.json()
 
 
@@ -253,7 +254,7 @@ def fulfill(order_id, session_id=None):
 def run_fulfillment(order_id, session_id=None):
     try:
         result = fulfill(order_id, session_id)
-        app.logger.info("Fulfillment result order=%s status=%s", order_id, result.get("status"))
+        app.logger.warning("Fulfillment result order=%s status=%s", order_id, result.get("status"))
     except Exception:
         app.logger.exception("Fulfillment failed for %s", order_id)
 
@@ -290,14 +291,19 @@ def recover_stale_jobs():
             rows = conn.execute(text("""
                 SELECT id, stripe_session_id
                 FROM orders
-                WHERE generated_text IS NULL
-                  AND status IN ('generating', 'fulfillment_failed')
-                  AND updated_at < :stale_before
+                WHERE (
+                    status = 'delivery_failed' AND generated_text IS NOT NULL
+                ) OR (
+                    generated_text IS NULL
+                    AND status IN ('generating', 'fulfillment_failed')
+                    AND updated_at < :stale_before
+                )
                 ORDER BY updated_at ASC
                 LIMIT 20
             """), {"stale_before": stale_before}).mappings().all()
+        app.logger.warning("Recovery scan found %s pending fulfillment job(s)", len(rows))
         for row in rows:
-            app.logger.info("Recovering stale fulfillment order=%s", row["id"])
+            app.logger.warning("Recovering fulfillment order=%s", row["id"])
             queue_fulfillment(row["id"], row.get("stripe_session_id"))
     except Exception:
         app.logger.exception("Stale fulfillment recovery failed")
