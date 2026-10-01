@@ -3,7 +3,9 @@ import html
 import io
 import json
 import os
-from datetime import datetime, timezone
+import threading
+import time
+from datetime import datetime, timezone, timedelta
 
 import requests
 from flask import Flask, jsonify, request
@@ -31,8 +33,12 @@ elif DATABASE_URL.startswith("postgresql://"):
 engine = create_engine(DATABASE_URL, pool_pre_ping=True) if DATABASE_URL else None
 
 
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
 def now_iso():
-    return datetime.now(timezone.utc).isoformat()
+    return now_utc().isoformat()
 
 
 def get_order(order_id):
@@ -62,6 +68,7 @@ def update_order(order_id, status, generated_text=None, session_id=None):
 
 
 def claim_generation(order_id, session_id=None):
+    stale_before = (now_utc() - timedelta(minutes=2)).isoformat()
     with engine.begin() as conn:
         row = conn.execute(text("""
             UPDATE orders
@@ -70,32 +77,35 @@ def claim_generation(order_id, session_id=None):
                 updated_at=:updated_at
             WHERE id=:id
               AND generated_text IS NULL
-              AND status NOT IN ('generating', 'delivered')
+              AND status <> 'delivered'
+              AND (status <> 'generating' OR updated_at < :stale_before)
             RETURNING id
         """), {
             "session_id": session_id,
             "updated_at": now_iso(),
+            "stale_before": stale_before,
             "id": order_id,
         }).first()
         return row is not None
 
 
 def build_prompt(payload):
+    locations = payload.get("locations") or []
     return f"""Du bist Autor und Spieldesigner für hochwertige, sichere Kindergeburtstage.
 Erstelle ein vollständig spielbares, personalisiertes Geburtstags-Abenteuer mit genau 8 Stationen und etwa 45–60 Minuten Spielzeit.
 
 Daten:
-Geburtstagskind: {payload['child_name']}
-Alter: {payload['age']}
-Gruppengröße: {payload['group_size']}
-Interessen: {payload['interests']}
-Thema: {payload['theme']}
-Spielbereich: {payload['play_area']}
-Nutzbare Orte: {', '.join(payload['locations'])}
-Weitere Orte: {payload['other_locations']}
-Tabu-Orte: {payload['forbidden_locations']}
-Finale: {payload['final_location']}
-Hinweise: {payload['notes']}
+Geburtstagskind: {payload.get('child_name', '')}
+Alter: {payload.get('age', '')}
+Gruppengröße: {payload.get('group_size', '')}
+Interessen: {payload.get('interests', '')}
+Thema: {payload.get('theme', '')}
+Spielbereich: {payload.get('play_area', '')}
+Nutzbare Orte: {', '.join(locations)}
+Weitere Orte: {payload.get('other_locations', '')}
+Tabu-Orte: {payload.get('forbidden_locations', '')}
+Finale: {payload.get('final_location', '')}
+Hinweise: {payload.get('notes', '')}
 
 Vorgaben:
 - Geburtstagskind zentral und positiv einbinden.
@@ -123,9 +133,13 @@ Ausgabe in sauberem Markdown:
 
 
 def generate_quest(payload):
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=180.0)
     model = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
-    response = client.responses.create(model=model, input=build_prompt(payload))
+    response = client.responses.create(
+        model=model,
+        input=build_prompt(payload),
+        reasoning={"effort": "low"},
+    )
     return response.output_text
 
 
@@ -142,12 +156,7 @@ def markdown_to_pdf_bytes(title, content):
         author="GeburtstagsQuest",
     )
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "QuestTitle",
-        parent=styles["Title"],
-        alignment=TA_CENTER,
-        spaceAfter=10,
-    )
+    title_style = ParagraphStyle("QuestTitle", parent=styles["Title"], alignment=TA_CENTER, spaceAfter=10)
     h1 = ParagraphStyle("H1", parent=styles["Heading1"], spaceBefore=10, spaceAfter=6)
     h2 = ParagraphStyle("H2", parent=styles["Heading2"], spaceBefore=8, spaceAfter=4)
     body = ParagraphStyle("Body", parent=styles["BodyText"], leading=15, spaceAfter=5)
@@ -157,9 +166,7 @@ def markdown_to_pdf_bytes(title, content):
         line = raw_line.strip()
         if not line:
             story.append(Spacer(1, 5))
-            continue
-        safe = html.escape(line)
-        if line.startswith("# "):
+        elif line.startswith("# "):
             story.append(Paragraph(html.escape(line[2:]), h1))
         elif line.startswith("## "):
             story.append(Paragraph(html.escape(line[3:]), h2))
@@ -170,25 +177,23 @@ def markdown_to_pdf_bytes(title, content):
         elif line.startswith("- "):
             story.append(Paragraph("• " + html.escape(line[2:]), body))
         else:
-            story.append(Paragraph(safe, body))
+            story.append(Paragraph(html.escape(line), body))
 
     doc.build(story)
     return buffer.getvalue()
 
 
-def send_email(to_email, child_name, pdf_bytes, order_id):
-    api_key = os.environ["RESEND_API_KEY"]
-    from_email = os.environ["RESEND_FROM_EMAIL"]
+def send_email(to_email, pdf_bytes, order_id):
     payload = {
-        "from": from_email,
+        "from": os.environ["RESEND_FROM_EMAIL"],
         "to": [to_email],
         "subject": "Deine GeburtstagsQuest ist fertig",
         "html": (
-            f"<p>Hallo,</p>"
-            f"<p>deine personalisierte GeburtstagsQuest ist fertig.</p>"
-            f"<p>Im Anhang findest du die druckfertige PDF mit Geschichte, 8 Stationen, Lösungen, Finale und Urkunde.</p>"
-            f"<p>Viel Spaß bei eurem Abenteuer!</p>"
-            f"<p>GeburtstagsQuest</p>"
+            "<p>Hallo,</p>"
+            "<p>deine personalisierte GeburtstagsQuest ist fertig.</p>"
+            "<p>Im Anhang findest du die druckfertige PDF mit Geschichte, 8 Stationen, Lösungen, Finale und Urkunde.</p>"
+            "<p>Viel Spaß bei eurem Abenteuer!</p>"
+            "<p>GeburtstagsQuest</p>"
         ),
         "attachments": [{
             "filename": f"GeburtstagsQuest-{order_id}.pdf",
@@ -199,12 +204,12 @@ def send_email(to_email, child_name, pdf_bytes, order_id):
     response = requests.post(
         "https://api.resend.com/emails",
         headers={
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {os.environ['RESEND_API_KEY']}",
             "Content-Type": "application/json",
             "Idempotency-Key": f"geburtstagsquest-delivery-{order_id}",
         },
         json=payload,
-        timeout=30,
+        timeout=60,
     )
     response.raise_for_status()
     return response.json()
@@ -219,15 +224,14 @@ def fulfill(order_id, session_id=None):
 
     payload = json.loads(order["payload"])
     generated = order.get("generated_text")
+
     if not generated:
         if not claim_generation(order_id, session_id=session_id):
             latest = get_order(order_id)
             if latest and latest.get("generated_text"):
                 generated = latest["generated_text"]
-            elif latest and latest.get("status") == "generating":
-                return {"status": "generation_in_progress"}
             else:
-                raise RuntimeError("generation_claim_failed")
+                return {"status": "generation_in_progress"}
         else:
             try:
                 generated = generate_quest(payload)
@@ -236,18 +240,34 @@ def fulfill(order_id, session_id=None):
                 update_order(order_id, "fulfillment_failed", session_id=session_id)
                 raise
 
-    pdf_bytes = markdown_to_pdf_bytes(f"GeburtstagsQuest für {payload['child_name']}", generated)
-    email_result = send_email(order["email"], payload["child_name"], pdf_bytes, order_id)
-    update_order(order_id, "delivered", generated_text=generated, session_id=session_id)
-    return {"status": "delivered", "email_id": email_result.get("id")}
+    try:
+        pdf_bytes = markdown_to_pdf_bytes(f"GeburtstagsQuest für {payload.get('child_name', '')}", generated)
+        email_result = send_email(order["email"], pdf_bytes, order_id)
+        update_order(order_id, "delivered", generated_text=generated, session_id=session_id)
+        return {"status": "delivered", "email_id": email_result.get("id")}
+    except Exception:
+        update_order(order_id, "delivery_failed", generated_text=generated, session_id=session_id)
+        raise
+
+
+def run_fulfillment(order_id, session_id=None):
+    try:
+        result = fulfill(order_id, session_id)
+        app.logger.info("Fulfillment result order=%s status=%s", order_id, result.get("status"))
+    except Exception:
+        app.logger.exception("Fulfillment failed for %s", order_id)
+
+
+def queue_fulfillment(order_id, session_id=None):
+    thread = threading.Thread(target=run_fulfillment, args=(order_id, session_id), daemon=True)
+    thread.start()
 
 
 def stripe_webhook_secrets():
-    values = [
+    return [value for value in [
         os.getenv("FULFILLMENT_STRIPE_WEBHOOK_SECRET", ""),
         os.getenv("FULFILLMENT_STRIPE_WEBHOOK_SECRET_TEST", ""),
-    ]
-    return [value for value in values if value]
+    ] if value]
 
 
 def verify_stripe_event(raw, signature):
@@ -258,6 +278,29 @@ def verify_stripe_event(raw, signature):
         except Exception as exc:
             last_error = exc
     raise last_error or ValueError("no_webhook_secret")
+
+
+def recover_stale_jobs():
+    time.sleep(8)
+    if not engine:
+        return
+    try:
+        stale_before = (now_utc() - timedelta(minutes=2)).isoformat()
+        with engine.begin() as conn:
+            rows = conn.execute(text("""
+                SELECT id, stripe_session_id
+                FROM orders
+                WHERE generated_text IS NULL
+                  AND status IN ('generating', 'fulfillment_failed')
+                  AND updated_at < :stale_before
+                ORDER BY updated_at ASC
+                LIMIT 20
+            """), {"stale_before": stale_before}).mappings().all()
+        for row in rows:
+            app.logger.info("Recovering stale fulfillment order=%s", row["id"])
+            queue_fulfillment(row["id"], row.get("stripe_session_id"))
+    except Exception:
+        app.logger.exception("Stale fulfillment recovery failed")
 
 
 @app.get("/health")
@@ -296,13 +339,11 @@ def stripe_webhook():
     if not order_id:
         return jsonify({"error": "order_id_missing"}), 400
 
-    try:
-        result = fulfill(order_id, session.get("id"))
-        return jsonify({"received": True, **result})
-    except Exception as exc:
-        app.logger.exception("Fulfillment failed for %s", order_id)
-        return jsonify({"error": "fulfillment_failed", "detail": str(exc)[:200]}), 500
+    queue_fulfillment(order_id, session.get("id"))
+    return jsonify({"received": True, "queued": True})
 
+
+threading.Thread(target=recover_stale_jobs, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
