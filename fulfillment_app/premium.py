@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import threading
+import time
 
 from openai import OpenAI
 
@@ -208,6 +210,20 @@ def generate_quest(payload):
     raise RuntimeError("Quality gate failed: " + " | ".join((last_gate or {}).get("errors", [])[:8]))
 
 
+def _one_time_regeneration(legacy):
+    time.sleep(1)
+    order_id = os.getenv("TEST_REGENERATE_ORDER", "").strip()
+    if not order_id:
+        return
+    try:
+        legacy.app.logger.warning("Starting one-time premium QA regeneration for order=%s", order_id)
+        if legacy.reset_order_for_regeneration(order_id):
+            legacy.queue_fulfillment(order_id)
+    except Exception:
+        legacy.app.logger.exception("One-time premium QA regeneration failed")
+
+
 def install(legacy):
     legacy.generate_quest = generate_quest
     legacy.structured_pdf_bytes = structured_pdf_bytes
+    threading.Thread(target=_one_time_regeneration, args=(legacy,), daemon=True).start()
