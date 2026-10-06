@@ -258,6 +258,10 @@ def _normalize_critic_false_positives(critic, data, payload):
 def _critic_core_passed(critic):
     if not critic.get("route_chain_valid"):
         return False
+    if not critic.get("personalization_strong"):
+        return False
+    if not critic.get("stories_varied"):
+        return False
     stations = critic.get("stations") or []
     if len(stations) != 8:
         return False
