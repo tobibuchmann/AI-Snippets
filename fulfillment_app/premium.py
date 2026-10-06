@@ -177,11 +177,12 @@ ADAPTIVES NIVEAUPROFIL
 PREMIUM-REGELN
 - GENAU 8 Stationen; Einstieg, Stationen und Finale zusammen ungefähr {target_duration} Minuten.
 - setup_minutes realistisch <= 10. Nutze überwiegend Papier, Stifte und Alltagsgegenstände.
-- Jede Station nennt current_location UND next_location. Station 8 führt zum Finale.
+- Jede Station nennt current_location UND next_location. Für Station 8 MUSS next_location exakt und ohne Zusätze dem Kundenwert Finale/Schatz entsprechen: {payload.get('final_location','')}. Die Lösung von Station 8 muss genau diesen Ort ergeben.
 - child_card MUSS alleine spielbar sein: kurze Story + vollständige Aufgabe + alles, was Kinder wissen müssen. Bei Lesestufe "kurze_saetze" höchstens ca. 45 Wörter pro child_card; bei "vorlesen" noch kürzer.
 - puzzle_display enthält den tatsächlich druckbaren Rätselinhalt. Keine bloße Beschreibung dessen, was Eltern noch selbst erstellen sollen.
 - printable_pieces enthält ALLE zusätzlichen Ausschneideteile, die für diese Station benötigt werden. Wenn keine benötigt werden: leere Liste. Eltern dürfen niemals selbst Buchstaben, Eier, Fossilien, Karten oder Codes basteln/beschriften müssen.
 - Insgesamt höchstens 8 printable_pieces über die ganze Quest und höchstens 2 Stationen mit solchen Teilen. Bevorzuge selbsterklärende Karten und Bewegung statt Bastelmaterial.
+- Wenn Finale/Schatz nur ein breiter Bereich ist (z.B. Garten), gib Station 8 als ein printable_piece einen deutlich beschrifteten thematischen "SCHATZMARKER" mit. preparation erklärt: Eltern legen diesen Marker direkt zum Schatz an eine selbst gewählte sichere Stelle innerhalb des Finalorts. Die Kinder müssen zunächst nur den Finalort aus dem Rätsel ableiten und suchen dort dann den Marker.
 - Nutze mindestens 6 unterschiedliche puzzle_type-Werte aus: {', '.join(PUZZLE_TYPES)}. Kein Typ häufiger als zweimal.
 - Enthalten sein müssen mindestens eine Beobachtungs-, eine Bewegungs-, eine Such- und eine Code- oder Logikstation.
 - Mindestens 3 Stationen müssen echte Kooperation erfordern. team_role vergibt wechselnde Rollen.
