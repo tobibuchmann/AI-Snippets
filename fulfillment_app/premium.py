@@ -146,6 +146,13 @@ def build_prompt(payload, feedback=""):
     target_duration = _int(payload.get("desired_duration"), 45)
     if target_duration not in {30, 45, 60}:
         target_duration = 45
+    activity_level = str(payload.get("activity_level") or "ausgewogen")
+    if activity_level == "viel":
+        activity_requirement = "VERBINDLICH: Mindestens 4 der 8 Stationen müssen puzzle_type movement, search oder teamwork haben; davon GENAU oder mindestens 2 Stationen puzzle_type movement. Diese Stationen müssen körperlich spürbar aktiv sein, nicht nur im Sitzen etwas sortieren."
+    elif activity_level == "ausgewogen":
+        activity_requirement = "Mindestens 3 Stationen sollen körperlich aktiv sein, davon mindestens eine Bewegungsstation."
+    else:
+        activity_requirement = "Mindestens eine sichere Bewegungsstation; ansonsten ruhiger Schwerpunkt."
     correction = f"\nKORRIGIERE DIESE QUALITÄTSPUNKTE:\n{feedback}\n" if feedback else ""
     return f"""Du entwickelst ein PREMIUM-PARTY-KIT für einen Kindergeburtstag. Es muss so gut sein, dass Eltern dafür 39 Euro bezahlen.
 Ziel: maximal wenig Elternstress, höchstens etwa 10 Minuten Aufbau, ungefähr {target_duration} Minuten Spielspaß, echte Personalisierung und ein Wow-Effekt für {age}-Jährige.
@@ -178,9 +185,11 @@ PREMIUM-REGELN
 - Nutze mindestens 6 unterschiedliche puzzle_type-Werte aus: {', '.join(PUZZLE_TYPES)}. Kein Typ häufiger als zweimal.
 - Enthalten sein müssen mindestens eine Beobachtungs-, eine Bewegungs-, eine Such- und eine Code- oder Logikstation.
 - Mindestens 3 Stationen müssen echte Kooperation erfordern. team_role vergibt wechselnde Rollen.
+- {activity_requirement}
 - Pro Station zwei konkrete Hinweise: hint_1 sanft, hint_2 deutlich. Lösung immer eindeutig.
 - Personalisierung ist Kern des Produkts: Name und konkrete Interessen müssen in Einstieg UND mindestens 4 Stationen inhaltlich sinnvoll vorkommen. Nicht nur den Namen voranstellen; Aufgaben oder Storydetails müssen sich erkennbar auf die Angaben beziehen.
-- Die 8 Stationen bilden EINE zusammenhängende Geschichte mit erkennbarem Fortschritt: Auftrag am Anfang, Zwischenentwicklung ungefähr in der Mitte und konkreter Abschluss im Finale. Das Thema darf nicht nur Dekoration sein.
+- Die 8 Stationen bilden EINE zusammenhängende Geschichte mit erkennbarem Fortschritt: Auftrag am Anfang, neue Entdeckungen/kleine Wendungen unterwegs, eine Zwischenentwicklung ungefähr in der Mitte und konkreter Abschluss im Finale. Das Thema darf nicht nur Dekoration sein. Jede Station soll dabei eine andere Szene oder Funktion in der Geschichte haben, nicht acht Varianten desselben "neuen Hinweises".
+- Titel, story, child_card und team_role dürfen NIEMALS die gesuchte Rätselantwort vorwegnehmen. Wenn das Rätsel z.B. ein Tier erraten lässt, darf der Tiername nicht im Titel oder in Rollen stehen.
 - indoor_fallback: konkrete Ersatzlösung für wetterabhängige Stationen, ohne neue Materialien.
 - party_schedule: 5-6 konkrete Zeitblöcke relativ zum Partybeginn.
 - preparation: GENAU 8 Zeilen, eine pro Station, mit konkretem Ort, Versteck und Material.
