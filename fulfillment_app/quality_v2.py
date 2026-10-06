@@ -58,6 +58,26 @@ def _norm(value):
     return re.sub(r"[^a-z0-9]+", "", value)
 
 
+def _response_diagnostics(response):
+    status = getattr(response, "status", None)
+    incomplete = getattr(response, "incomplete_details", None)
+    error = getattr(response, "error", None)
+    return f"status={status!r}, incomplete_details={incomplete!r}, error={error!r}"
+
+
+def _parse_response_json(response, label):
+    text = str(getattr(response, "output_text", "") or "").strip()
+    if not text:
+        raise RuntimeError(f"{label} returned empty output ({_response_diagnostics(response)})")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        preview = text[:500].replace("\n", " ")
+        raise RuntimeError(
+            f"{label} returned invalid JSON: {exc}; preview={preview!r}; {_response_diagnostics(response)}"
+        ) from exc
+
+
 def _enhanced_prompt(payload, feedback=""):
     base = premium.build_prompt(payload, feedback)
     final_location = str(payload.get("final_location") or "").strip()
@@ -79,7 +99,7 @@ ZUSÄTZLICHE VERBINDLICHE RÄTSELQUALITÄT
 - Die story-Texte müssen stationsspezifisch sein und dürfen nicht achtmal dieselbe Standardsatz-Schablone verwenden.
 - Mindestens 4 Stationen müssen echte persönliche Details aus diesen Interessen sinnvoll aufgreifen: {interests}.
 - preparation.hide muss konkret sein, z.B. 'unter das rechte Sofakissen' oder 'mit Klebestreifen unter die Tischkante'. Vermeide achtmal 'gut sichtbar verstecken'.
-- Schwierigkeit für das angegebene Alter staffeln: ungefähr 2 leichte Einstiegsaufgaben, 4 mittlere und 2 etwas kniffligere Aufgaben.
+- Schwierigkeit für das angegebene Profil staffeln: ungefähr 2 leichte Einstiegsaufgaben, 4 mittlere und 2 etwas kniffligere Aufgaben.
 - Kein Rätsel darf nur aus 'nennt dem Spielleiter eure Lösung' bestehen. Die Karte muss selbst den Übergang zur nächsten Station ermöglichen.
 - Prüfe vor Ausgabe ausdrücklich: Passt solution zum tatsächlichen Rätsel UND zu next_location?
 """
@@ -91,7 +111,6 @@ def deterministic_gate(data, payload):
     warnings = list(gate.get("warnings") or [])
     stations = data.get("stations") or []
 
-    # Route chain: next_location of station i must equal current_location of station i+1.
     for i in range(len(stations) - 1):
         if _norm(stations[i].get("next_location")) != _norm(stations[i + 1].get("current_location")):
             errors.append(f"Route bricht zwischen Station {i+1} und {i+2}.")
@@ -100,7 +119,6 @@ def deterministic_gate(data, payload):
     if stations and final_location and _norm(stations[-1].get("next_location")) != final_location:
         errors.append("Station 8 führt nicht zum angegebenen Schatzort.")
 
-    # Repeated roles/stories are a strong sign of generic generation.
     roles = [_norm(s.get("team_role")) for s in stations if s.get("team_role")]
     if len(set(roles)) < 4:
         errors.append("Teamrollen sind zu wenig abwechslungsreich (<4 unterschiedliche Rollen).")
@@ -135,38 +153,49 @@ def deterministic_gate(data, payload):
 def semantic_critic(client, model, data, payload):
     critic_input = {
         "child_age": payload.get("age"),
+        "reading_level": payload.get("reading_level"),
+        "math_level": payload.get("math_level"),
+        "difficulty": payload.get("difficulty"),
+        "activity_level": payload.get("activity_level"),
+        "desired_duration": payload.get("desired_duration"),
         "interests": payload.get("interests"),
         "theme": payload.get("theme"),
         "final_location": payload.get("final_location"),
         "quest": data,
     }
-    response = client.responses.create(
-        model=model,
-        reasoning={"effort": "high"},
-        max_output_tokens=6000,
-        input=(
-            "Du bist ein strenger Redakteur und Rätseldesigner für Premium-Kindergeburtstage. "
-            "Prüfe die folgende Quest, indem du jedes der 8 Rätsel tatsächlich selbst löst. "
-            "Akzeptiere eine Station nur, wenn der Rätselinhalt auf der Kinderkarte vollständig, logisch korrekt, "
-            "altersgerecht und eindeutig lösbar ist und die Lösung aus Sicht der Kinder nachvollziehbar zum angegebenen "
-            "next_location führt. Eine nur im Elternblatt behauptete Lösung zählt NICHT. Prüfe außerdem, ob die Antwort "
-            "nicht bereits verraten wird, beide Hinweise konkret und abgestuft helfen, Teamrollen und Geschichten variieren, "
-            "die Versteckanweisungen konkret sind und die Interessen echte Personalisierung erzeugen. "
-            "Setze passed nur auf true, wenn keine relevante Schwäche besteht.\n\n"
-            + json.dumps(critic_input, ensure_ascii=False)
-        ),
-        text={
-            "format": {
-                "type": "json_schema",
-                "name": "geburtstagsquest_critic",
-                "description": "Strenge semantische Qualitätsprüfung einer KindergeburtstagsQuest.",
-                "schema": CRITIC_SCHEMA,
-                "strict": True,
+    last_error = None
+    for effort, budget in (("medium", 9000), ("low", 11000)):
+        response = client.responses.create(
+            model=model,
+            reasoning={"effort": effort},
+            max_output_tokens=budget,
+            input=(
+                "Du bist ein strenger Redakteur und Rätseldesigner für Premium-Kindergeburtstage. "
+                "Prüfe die folgende Quest, indem du jedes der 8 Rätsel tatsächlich selbst löst. "
+                "Akzeptiere eine Station nur, wenn der Rätselinhalt auf der Kinderkarte vollständig, logisch korrekt, "
+                "altersgerecht und eindeutig lösbar ist und die Lösung aus Sicht der Kinder nachvollziehbar zum angegebenen "
+                "next_location führt. Eine nur im Elternblatt behauptete Lösung zählt NICHT. Prüfe außerdem, ob die Antwort "
+                "nicht bereits verraten wird, beide Hinweise konkret und abgestuft helfen, Teamrollen und Geschichten variieren, "
+                "die Versteckanweisungen konkret sind und die Interessen echte Personalisierung erzeugen. "
+                "Setze passed nur auf true, wenn keine relevante Schwäche besteht.\n\n"
+                + json.dumps(critic_input, ensure_ascii=False)
+            ),
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "geburtstagsquest_critic",
+                    "description": "Strenge semantische Qualitätsprüfung einer KindergeburtstagsQuest.",
+                    "schema": CRITIC_SCHEMA,
+                    "strict": True,
+                },
+                "verbosity": "medium",
             },
-            "verbosity": "medium",
-        },
-    )
-    return json.loads(response.output_text)
+        )
+        try:
+            return _parse_response_json(response, "semantic critic")
+        except RuntimeError as exc:
+            last_error = exc
+    raise last_error or RuntimeError("semantic critic failed without response")
 
 
 def _feedback_from_checks(rule_gate, critic):
@@ -196,13 +225,18 @@ def generate_quest(payload):
     model = os.getenv("OPENAI_MODEL", "gpt-6-luna")
     feedback = ""
     last_feedback = ""
+    response_errors = []
 
-    for _ in range(3):
+    # High reasoning was able to consume the full output budget before emitting JSON.
+    # Use medium by default and a low-effort recovery pass if output is empty/incomplete.
+    generation_profiles = (("medium", 18000), ("medium", 20000), ("low", 22000))
+
+    for attempt, (effort, budget) in enumerate(generation_profiles, 1):
         response = client.responses.create(
             model=model,
             input=_enhanced_prompt(payload, feedback),
-            reasoning={"effort": "high"},
-            max_output_tokens=14000,
+            reasoning={"effort": effort},
+            max_output_tokens=budget,
             text={
                 "format": {
                     "type": "json_schema",
@@ -214,9 +248,24 @@ def generate_quest(payload):
                 "verbosity": "medium",
             },
         )
-        data = json.loads(response.output_text)
+        try:
+            data = _parse_response_json(response, f"quest generation attempt {attempt}")
+        except RuntimeError as exc:
+            response_errors.append(str(exc))
+            feedback = (
+                "Die vorige Modellantwort war leer oder unvollständig. Antworte diesmal direkt und kompakt im verlangten JSON-Schema; "
+                "verwende kurze Storytexte und kurze, vollständige Rätselkarten."
+            )
+            continue
+
         rule_gate = deterministic_gate(data, payload)
-        critic = semantic_critic(client, model, data, payload)
+        try:
+            critic = semantic_critic(client, model, data, payload)
+        except RuntimeError as exc:
+            response_errors.append(str(exc))
+            # The deterministic gate is still valuable, but a missing critic must not silently pass.
+            feedback = "Semantische Qualitätsprüfung konnte nicht gelesen werden. Erzeuge die Quest nochmals besonders eindeutig und kompakt."
+            continue
 
         if rule_gate["passed"] and critic.get("passed"):
             data["quality_gate"] = {
@@ -235,7 +284,8 @@ def generate_quest(payload):
         last_feedback = _feedback_from_checks(rule_gate, critic)
         feedback = last_feedback
 
-    raise RuntimeError("Premium semantic QA failed after 3 attempts: " + last_feedback[:2500])
+    details = last_feedback or " | ".join(response_errors[-3:])
+    raise RuntimeError("Premium semantic QA failed after recovery attempts: " + details[:3500])
 
 
 def install(legacy):
