@@ -152,6 +152,7 @@ def deterministic_gate(data, payload):
 
 def semantic_critic(client, model, data, payload):
     critic_input = {
+        "child_name": payload.get("child_name"),
         "child_age": payload.get("age"),
         "reading_level": payload.get("reading_level"),
         "math_level": payload.get("math_level"),
@@ -177,7 +178,8 @@ def semantic_critic(client, model, data, payload):
                 "next_location führt. Eine nur im Elternblatt behauptete Lösung zählt NICHT. Prüfe außerdem, ob die Antwort "
                 "nicht bereits verraten wird, beide Hinweise konkret und abgestuft helfen, Teamrollen und Geschichten variieren, "
                 "die Versteckanweisungen konkret sind und die Interessen echte Personalisierung erzeugen. "
-                "Setze passed nur auf true, wenn keine relevante Schwäche besteht.\n\n"
+                "Behandle den vom Kunden gelieferten child_name exakt als gültigen Namen. Auch ungewöhnliche oder testartig klingende Namen "
+                "dürfen NICHT als Platzhalter kritisiert werden. Setze passed nur auf true, wenn keine relevante Schwäche besteht.\n\n"
                 + json.dumps(critic_input, ensure_ascii=False)
             ),
             text={
@@ -218,6 +220,40 @@ def _feedback_from_checks(rule_gate, critic):
     if not critic.get("stories_varied"): lines.append("Stationsgeschichten stärker variieren.")
     if not critic.get("preparation_concrete"): lines.append("Versteckanweisungen konkreter machen.")
     return "\n".join(f"- {line}" for line in lines[:30])
+
+
+def _repair_quest(client, model, data, payload, feedback, repair_attempt):
+    repair_prompt = (
+        "Du reparierst eine bereits erzeugte KindergeburtstagsQuest nach einer strengen QA. "
+        "Ändere so wenig wie möglich, aber behebe ALLE unten genannten Fehler. "
+        "Die korrigierte Quest muss vollständig dem vorgegebenen JSON-Schema entsprechen. "
+        "Besonders wichtig: Jede Kinderkarte muss aus ihrem gedruckten Inhalt eindeutig zum next_location führen; "
+        "solution muss die tatsächliche Herleitung UND den Zielort wörtlich nennen; preparation darf keine Karten am selben "
+        "konkreten Versteck stapeln; es dürfen keine Requisiten verlangt werden, die nicht in preparation/materials stehen. "
+        "Prüfe Codes, Symbollegenden, Buchstabenfolgen und Reihenfolgen selbst nach. "
+        "Erhalte gültige Personalisierung und abwechslungsreiche Geschichten. "
+        "Der angegebene child_name ist ein echter Kundenname und darf niemals als Platzhalter behandelt oder ersetzt werden.\n\n"
+        "QA-FEHLER:\n" + feedback + "\n\n"
+        "KUNDENDATEN:\n" + json.dumps(payload, ensure_ascii=False) + "\n\n"
+        "BISHERIGE QUEST:\n" + json.dumps(data, ensure_ascii=False)
+    )
+    response = client.responses.create(
+        model=model,
+        input=repair_prompt,
+        reasoning={"effort": "medium"},
+        max_output_tokens=22000,
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": f"geburtstagsquest_repair_{repair_attempt}",
+                "description": "Gezielt reparierte, druckfertige KindergeburtstagsQuest.",
+                "schema": premium.QUEST_SCHEMA,
+                "strict": True,
+            },
+            "verbosity": "medium",
+        },
+    )
+    return _parse_response_json(response, f"quest repair attempt {repair_attempt}")
 
 
 def generate_quest(payload):
@@ -284,8 +320,48 @@ def generate_quest(payload):
         last_feedback = _feedback_from_checks(rule_gate, critic)
         feedback = last_feedback
 
+        # Ab dem zweiten vollständigen Entwurf nicht immer alles neu erfinden:
+        # gezielt den vorhandenen Entwurf reparieren und erneut durch beide Gates schicken.
+        if attempt >= 2 and last_feedback:
+            repaired = data
+            repair_feedback = last_feedback
+            for repair_attempt in range(1, 4):
+                try:
+                    repaired = _repair_quest(
+                        client, model, repaired, payload, repair_feedback, repair_attempt
+                    )
+                except RuntimeError as exc:
+                    response_errors.append(str(exc))
+                    continue
+
+                repaired_gate = deterministic_gate(repaired, payload)
+                try:
+                    repaired_critic = semantic_critic(client, model, repaired, payload)
+                except RuntimeError as exc:
+                    response_errors.append(str(exc))
+                    continue
+
+                if repaired_gate["passed"] and repaired_critic.get("passed"):
+                    repaired["quality_gate"] = {
+                        **repaired_gate,
+                        "semantic_critic": {
+                            "passed": True,
+                            "route_chain_valid": repaired_critic.get("route_chain_valid"),
+                            "personalization_strong": repaired_critic.get("personalization_strong"),
+                            "team_roles_varied": repaired_critic.get("team_roles_varied"),
+                            "stories_varied": repaired_critic.get("stories_varied"),
+                            "preparation_concrete": repaired_critic.get("preparation_concrete"),
+                        },
+                        "repaired": True,
+                        "repair_attempts": repair_attempt,
+                    }
+                    return json.dumps(repaired, ensure_ascii=False)
+
+                repair_feedback = _feedback_from_checks(repaired_gate, repaired_critic)
+                last_feedback = repair_feedback
+
     details = last_feedback or " | ".join(response_errors[-3:])
-    raise RuntimeError("Premium semantic QA failed after recovery attempts: " + details[:3500])
+    raise RuntimeError("Premium semantic QA failed after generation and targeted repair attempts: " + details[:3500])
 
 
 def install(legacy):
