@@ -19,7 +19,7 @@ def install():
         return base + """
 
 ROBUSTE ROUTENMECHANIK — VERBINDLICH
-- Das eigentliche Ergebnis JEDER Station ist der nächste Ort. solution muss den next_location wörtlich enthalten, am besten exakt als "Zielort: <next_location>".
+- Das eigentliche Ergebnis JEDER Station ist der nächste Ort. solution soll den next_location wörtlich enthalten, am besten exakt als "Zielort: <next_location>".
 - Die Kinder müssen den next_location ausschließlich aus child_card + puzzle_display ableiten können. Das Elternblatt darf keine zusätzliche Information enthalten, die für die Ortslösung nötig ist.
 - Bevorzuge einfache, robuste Ortsrätsel: Buchstaben ergeben direkt den exakten Ortsnamen, eine eindeutige Bild-/Symbolzuordnung ergibt direkt den Ortsnamen oder eine sichtbare Legende ordnet EIN Ergebnis EINEM Zielort zu.
 - Wenn ein Rätsel zunächst einen Code, eine Zahl oder ein Lösungswort erzeugt, MUSS puzzle_display auf derselben Karte eine vollständige Legende enthalten, die dieses Ergebnis eindeutig zum exakten next_location übersetzt.
@@ -32,17 +32,17 @@ ROBUSTE ROUTENMECHANIK — VERBINDLICH
 
     def deterministic_gate(data, payload):
         gate = original_gate(data, payload)
-        errors = list(gate.get("errors") or [])
+        warnings = list(gate.get("warnings") or [])
         for index, station in enumerate(data.get("stations") or [], 1):
             target = _norm(station.get("next_location"))
             solution = _norm(station.get("solution"))
             if target and target not in solution:
-                errors.append(
+                warnings.append(
                     f"Station {index}: solution nennt den next_location nicht ausdrücklich; "
-                    "Routenlösung muss den Zielort wörtlich enthalten."
+                    "die semantische QA prüft stattdessen, ob Kinder den Zielort tatsächlich herleiten können."
                 )
-        gate["errors"] = errors
-        gate["passed"] = not errors
+        gate["warnings"] = warnings
+        gate["passed"] = not (gate.get("errors") or [])
         return gate
 
     premium.build_prompt = build_prompt
