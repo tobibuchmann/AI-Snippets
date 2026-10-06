@@ -1,15 +1,7 @@
 def post_worker_init(worker):
     try:
         import fulfillment_app
-        from premium_pdf import structured_pdf_bytes as premium_structured_pdf_bytes
-        from product_upgrade import apply_upgrade
-        from premium_output_upgrade import apply_output_upgrade
-
-        fulfillment_app.structured_pdf_bytes = premium_structured_pdf_bytes
-        apply_upgrade(fulfillment_app)
-        apply_output_upgrade(fulfillment_app)
-        worker.log.info("GeburtstagsQuest premium PDF renderer enabled")
-        worker.log.info("GeburtstagsQuest adaptive difficulty + audio upgrade enabled")
-        worker.log.info("GeburtstagsQuest premium output normalization enabled")
+        worker.log.info("GeburtstagsQuest fulfillment package initialized")
+        worker.log.info("GeburtstagsQuest premium QA, adaptive difficulty, PDF normalization and audio delivery are installed by fulfillment_app/__init__.py")
     except Exception:
-        worker.log.exception("Failed to enable GeburtstagsQuest product upgrades")
+        worker.log.exception("Failed to initialize GeburtstagsQuest fulfillment package")
