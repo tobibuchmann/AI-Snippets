@@ -178,11 +178,16 @@ def semantic_critic(client, model, data, payload):
                 "Prüfe die folgende Quest, indem du jedes der 8 Rätsel tatsächlich selbst löst. "
                 "Akzeptiere eine Station nur, wenn der Rätselinhalt auf der Kinderkarte vollständig, logisch korrekt, "
                 "altersgerecht und eindeutig lösbar ist und die Lösung aus Sicht der Kinder nachvollziehbar zum angegebenen "
-                "next_location führt. Eine nur im Elternblatt behauptete Lösung zählt NICHT. Prüfe außerdem, ob die Antwort "
+                "next_location führt. Für Station 8 genügt es ausdrücklich, dass die Kinder den vom Kunden angegebenen "
+                "final_location ableiten; das konkrete Schatzversteck aus preparation.hide ist Elterninformation und muss "
+                "NICHT auf der Kinderkarte verraten werden. Eine nur im Elternblatt behauptete Ortslösung zählt NICHT. Prüfe außerdem, ob die Antwort "
                 "nicht bereits verraten wird, beide Hinweise konkret und abgestuft helfen, Teamrollen und Geschichten variieren, "
                 "die Versteckanweisungen konkret sind und die Interessen echte Personalisierung erzeugen. "
                 "Behandle den vom Kunden gelieferten child_name exakt als gültigen Namen. Auch ungewöhnliche oder testartig klingende Namen "
-                "dürfen NICHT als Platzhalter kritisiert werden. Setze passed nur auf true, wenn keine relevante Schwäche besteht.\n\n"
+                "dürfen NICHT als Platzhalter kritisiert werden. Unterscheide harte Fehler von redaktionellen Verbesserungen: "
+                "passed darf true sein, wenn alle Rätsel lösbar, logisch korrekt, altersgerecht, selbständig spielbar und die Route "
+                "eindeutig herleitbar ist. Kleinere Schwächen bei Rollenvariation, Storyvariation, Versteckformulierungen, Regen-Plan "
+                "oder Hinweis-Eleganz dürfen als overall_issues genannt werden, sollen passed aber nicht auf false setzen.\n\n"
                 + json.dumps(critic_input, ensure_ascii=False)
             ),
             text={
@@ -201,6 +206,25 @@ def semantic_critic(client, model, data, payload):
         except RuntimeError as exc:
             last_error = exc
     raise last_error or RuntimeError("semantic critic failed without response")
+
+
+def _critic_core_passed(critic):
+    if not critic.get("route_chain_valid"):
+        return False
+    stations = critic.get("stations") or []
+    if len(stations) != 8:
+        return False
+    for station in stations:
+        if not all([
+            station.get("solvable"),
+            station.get("logically_correct"),
+            station.get("route_is_derivable"),
+            station.get("answer_not_leaked"),
+            station.get("age_appropriate"),
+            station.get("self_contained"),
+        ]):
+            return False
+    return True
 
 
 def _feedback_from_checks(rule_gate, critic):
@@ -310,12 +334,13 @@ def generate_quest(payload):
             )
             continue
 
-        if rule_gate["passed"] and critic.get("passed"):
+        if rule_gate["passed"] and _critic_core_passed(critic):
             logger.warning("Quest passed QA on full attempt=%s", attempt)
             data["quality_gate"] = {
                 **rule_gate,
                 "semantic_critic": {
-                    "passed": True,
+                    "passed": bool(critic.get("passed")),
+                    "core_passed": True,
                     "route_chain_valid": critic.get("route_chain_valid"),
                     "personalization_strong": critic.get("personalization_strong"),
                     "team_roles_varied": critic.get("team_roles_varied"),
@@ -356,14 +381,15 @@ def generate_quest(payload):
                 logger.warning("Semantic critic failed after repair attempt=%s", repair_attempt)
                 continue
 
-            if repaired_gate["passed"] and repaired_critic.get("passed"):
+            if repaired_gate["passed"] and _critic_core_passed(repaired_critic):
                 logger.warning(
                     "Quest passed QA after targeted repair attempt=%s", repair_attempt
                 )
                 repaired["quality_gate"] = {
                     **repaired_gate,
                     "semantic_critic": {
-                        "passed": True,
+                        "passed": bool(repaired_critic.get("passed")),
+                        "core_passed": True,
                         "route_chain_valid": repaired_critic.get("route_chain_valid"),
                         "personalization_strong": repaired_critic.get("personalization_strong"),
                         "team_roles_varied": repaired_critic.get("team_roles_varied"),
