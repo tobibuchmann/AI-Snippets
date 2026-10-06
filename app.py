@@ -67,6 +67,17 @@ def get_order(order_id):
         return dict(row) if row else None
 
 
+def get_order_by_session(session_id):
+    if not session_id:
+        return None
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT * FROM orders WHERE stripe_session_id=:session_id ORDER BY updated_at DESC LIMIT 1"),
+            {"session_id": session_id},
+        ).mappings().first()
+        return dict(row) if row else None
+
+
 def set_status(order_id, status, stripe_session_id=None):
     with engine.begin() as conn:
         conn.execute(text("""
@@ -119,6 +130,7 @@ def health():
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "database": "postgres" if "postgresql" in DATABASE_URL else "temporary_sqlite",
         "adaptive_order_fields": True,
+        "session_lookup": True,
     })
 
 
@@ -289,6 +301,21 @@ def checkout_status():
         code = 503 if result == "payment_verification_not_configured" else 402
         return jsonify({"paid": False, "error": result}), code
     return jsonify({"paid": True, "order_id": order_id})
+
+
+@app.get("/api/order-by-session")
+def order_by_session():
+    session_id = str(request.args.get("session_id", "")).strip()
+    if not session_id.startswith("cs_") or len(session_id) < 20:
+        return jsonify({"error": "invalid_session_id"}), 400
+    order = get_order_by_session(session_id)
+    if not order:
+        return jsonify({"found": False}), 404
+    return jsonify({
+        "found": True,
+        "order_id": order["id"],
+        "status": order["status"],
+    })
 
 
 @app.post("/api/generate")
