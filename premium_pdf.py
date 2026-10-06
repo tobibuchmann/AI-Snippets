@@ -259,9 +259,25 @@ def build_premium_pdf(payload,q):
         for p in prep[:10]: data.append([str(p.get('station','')),str(p.get('location','')),str(p.get('hide') or p.get('item') or '')])
         tb=Table([[Paragraph(safe(x),st['small']) for x in row] for row in data],colWidths=[22*mm,43*mm,103*mm],repeatRows=1); tb.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),t['dark']),('TEXTCOLOR',(0,0),(-1,0),WHITE),('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('GRID',(0,0),(-1,-1),.5,LINE),('VALIGN',(0,0),(-1,-1),'TOP'),('TOPPADDING',(0,0),(-1,-1),6),('BOTTOMPADDING',(0,0),(-1,-1),6),('LEFTPADDING',(0,0),(-1,-1),6)])); story += [tb]
     else: story += [Paragraph('Lege jede Kinderkarte am angegebenen Ort bereit. Platziere den Schatz am gewählten Finalort.',st['body'])]
+    stations=q.get('stations') or []
+    piece_stations=[s for s in stations if (s.get('printable_pieces') or [])]
+    if piece_stations:
+        story += [PageBreak()]
+        page_title(story,'Ausschneideteile - fertig zum Drucken',theme)
+        story += [Paragraph('Nur diese Teile ausschneiden. Du musst nichts selbst beschriften oder basteln.',st['body']),Spacer(1,3*mm)]
+        for s in piece_stations:
+            pieces=[str(x) for x in (s.get('printable_pieces') or [])]
+            story += [Paragraph(f"<b>Station {safe(s.get('number'))}: {safe(s.get('title'))}</b>",st['h2'])]
+            rows=[]
+            for i in range(0,len(pieces),2):
+                pair=pieces[i:i+2]
+                if len(pair)<2: pair.append('')
+                rows.append([Paragraph(safe(pair[0]),st['center']),Paragraph(safe(pair[1]),st['center'])])
+            pt=Table(rows,colWidths=[82*mm,82*mm])
+            pt.setStyle(TableStyle([('GRID',(0,0),(-1,-1),1,t['main']),('BACKGROUND',(0,0),(-1,-1),PAPER),('VALIGN',(0,0),(-1,-1),'MIDDLE'),('TOPPADDING',(0,0),(-1,-1),10),('BOTTOMPADDING',(0,0),(-1,-1),10),('LEFTPADDING',(0,0),(-1,-1),8),('RIGHTPADDING',(0,0),(-1,-1),8)]))
+            story += [pt,Spacer(1,5*mm)]
     story += [PageBreak()]
     page_title(story,'Die Route auf einen Blick',theme)
-    stations=q.get('stations') or []
     route=[]
     for s in stations: route.append(s.get('current_location') or s.get('location') or f"Station {s.get('number','')}")
     if stations: route.append(stations[-1].get('next_location') or payload.get('final_location') or 'Schatz')
