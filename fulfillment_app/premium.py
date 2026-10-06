@@ -35,6 +35,7 @@ QUEST_SCHEMA = {
             },
         },
         "intro_story": {"type": "string"},
+        "audio_intro": {"type": "string"},
         "stations": {
             "type": "array", "minItems": 8, "maxItems": 8,
             "items": {
@@ -63,6 +64,7 @@ QUEST_SCHEMA = {
             },
         },
         "finale": {"type": "string"},
+        "audio_finale": {"type": "string"},
         "certificate_text": {"type": "string"},
         "bonus_game": {
             "type": "object", "additionalProperties": False,
@@ -74,8 +76,8 @@ QUEST_SCHEMA = {
     },
     "required": [
         "title", "subtitle", "parent_summary", "setup_minutes", "party_schedule",
-        "materials", "indoor_fallback", "preparation", "intro_story", "stations",
-        "finale", "certificate_text", "bonus_game", "route_check", "quality_notes",
+        "materials", "indoor_fallback", "preparation", "intro_story", "audio_intro", "stations",
+        "finale", "audio_finale", "certificate_text", "bonus_game", "route_check", "quality_notes",
     ],
 }
 
@@ -91,12 +93,61 @@ def _allowed_locations(payload):
     return values
 
 
+def _int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def adaptive_profile(payload):
+    age = max(6, min(10, _int(payload.get("age"), 8)))
+    age_profiles = {
+        6: "Ein-Schritt-Aufgaben, sehr kurze Texte, viele Symbole und einfache Muster; keine langen Codes.",
+        7: "Kurze Ein- bis Zwei-Schritt-Aufgaben, einfache Wörter, klare Muster und erste kurze Codes.",
+        8: "Zwei-Schritt-Aufgaben, kurze Geheimcodes, visuelle Logik und einfache Schlussfolgerungen.",
+        9: "Mehrstufige, aber kompakte Aufgaben, Geheimschrift, Logik, Beobachtung und kleine Kombinationsrätsel.",
+        10: "Kniffligere Zwei- bis Drei-Schritt-Aufgaben mit Kombinationslogik, ohne Schulprüfungscharakter.",
+    }
+    reading = {
+        "vorlesen": "Lesen darf nicht Voraussetzung für die Lösung sein. Text extrem kurz und visuell unterstützen.",
+        "kurze_saetze": "Kurze, klare Sätze; keine langen Fließtexte auf Kinderkarten.",
+        "sicher": "Kurze Wortspiele, Codes und Textindizien sind möglich.",
+    }.get(str(payload.get("reading_level") or ""), "Textmenge automatisch altersgerecht halten.")
+    math = {
+        "ohne": "Keine Rechenaufgaben. Zahlen nur als Code, Reihenfolge oder Zählhilfe.",
+        "bis20": "Rechnen höchstens im Zahlenraum bis 20 und nur spielerisch.",
+        "bis100": "Einfache Rechnungen bis 100 höchstens in einer Station.",
+        "altersgerecht": "Rechnen altersgerecht und höchstens in einer Station; kein Arbeitsblatt-Stil.",
+    }.get(str(payload.get("math_level") or ""), "Rechnen altersgerecht und sparsam einsetzen.")
+    difficulty = {
+        "leicht": "Viele frühe Erfolgserlebnisse; klare Lösungswege.",
+        "ausgewogen": "Mischung aus schnellen Erfolgen und 2-3 echten Aha-Momenten.",
+        "knifflig": "Mehr Kombinationsaufgaben, aber weiterhin ohne Spezialwissen und mit eindeutiger Lösung.",
+    }.get(str(payload.get("difficulty") or ""), "Ausgewogene Schwierigkeit.")
+    activity = {
+        "ruhig": "Bewegung sparsam; Schwerpunkt Beobachtung, Suchen, Codes und Teamlogik.",
+        "ausgewogen": "Ruhige Denkaufgaben und aktive Such-/Bewegungsstationen abwechseln.",
+        "viel": "Mindestens drei aktive Such-/Bewegungsstationen, ohne Rennen, Klettern oder riskante Aktionen.",
+    }.get(str(payload.get("activity_level") or ""), "Ruhige und aktive Stationen ausgewogen abwechseln.")
+    return "\n".join([
+        f"ALTER: {age_profiles[age]}",
+        f"LESEN: {reading}",
+        f"RECHNEN: {math}",
+        f"KN IFFLIGKEIT: {difficulty}".replace("KN I", "KNI"),
+        f"AKTIVITÄT: {activity}",
+    ])
+
+
 def build_prompt(payload, feedback=""):
-    age = int(payload.get("age") or 9)
+    age = max(6, min(10, _int(payload.get("age"), 8)))
     locations = _allowed_locations(payload)
+    target_duration = _int(payload.get("desired_duration"), 45)
+    if target_duration not in {30, 45, 60}:
+        target_duration = 45
     correction = f"\nKORRIGIERE DIESE QUALITÄTSPUNKTE:\n{feedback}\n" if feedback else ""
     return f"""Du entwickelst ein PREMIUM-PARTY-KIT für einen Kindergeburtstag. Es muss so gut sein, dass Eltern dafür 39 Euro bezahlen.
-Ziel: möglichst wenig Elternstress, 15-20 Minuten Aufbau, 45-60 Minuten selbsttragender Spielspaß, echte Personalisierung und ein Wow-Effekt für {age}-Jährige.
+Ziel: maximal wenig Elternstress, höchstens etwa 10 Minuten Aufbau, ungefähr {target_duration} Minuten Spielspaß, echte Personalisierung und ein Wow-Effekt für {age}-Jährige.
 
 DATEN
 Geburtstagskind: {payload.get('child_name','')}
@@ -108,27 +159,33 @@ Spielbereich: {payload.get('play_area','')}
 Erlaubte Orte: {', '.join(locations)}
 Tabu-Orte: {payload.get('forbidden_locations','')}
 Finale/Schatz: {payload.get('final_location','')}
+Gewünschte Dauer: ca. {target_duration} Minuten
 Besondere Hinweise: {payload.get('notes','')}
 
+ADAPTIVES NIVEAUPROFIL
+{adaptive_profile(payload)}
+
 PREMIUM-REGELN
-- GENAU 8 Stationen, insgesamt 45-60 Minuten inkl. Einstieg und Finale.
-- setup_minutes realistisch <= 20. Nutze überwiegend Papier, Stifte und Alltagsgegenstände.
+- GENAU 8 Stationen; Einstieg, Stationen und Finale zusammen ungefähr {target_duration} Minuten.
+- setup_minutes realistisch <= 10. Nutze überwiegend Papier, Stifte und Alltagsgegenstände.
 - Jede Station nennt current_location UND next_location. Station 8 führt zum Finale.
-- child_card MUSS alleine spielbar sein: kurze Story + vollständige Aufgabe + alles, was Kinder wissen müssen. Eltern dürfen die Aufgabe nicht zusätzlich erklären müssen.
-- puzzle_display enthält den tatsächlich druckbaren Rätselinhalt, z.B. Geheimcode, Symbolfolge, Zahlenreihe, Suchliste, Wortsalat oder Logikhinweise. Keine bloße Beschreibung dessen, was Eltern noch selbst erstellen sollen.
-- Nutze mindestens 6 unterschiedliche puzzle_type-Werte aus: {', '.join(PUZZLE_TYPES)}.
-- Mindestens 3 Stationen müssen echte Kooperation erfordern. team_role vergibt wechselnde Rollen, z.B. Codechef, Spurensucher, Zeitwächter, Kartenleser, Teamsprecher.
-- Für {age}-Jährige: nicht babyhaft, nicht schulisch. Aha-Momente, Geheimschrift, Logik, Beobachtung, Bewegung und Codes; keine Spezialkenntnisse.
-- Pro Station zwei Hinweise: hint_1 sanft, hint_2 deutlich. Lösung immer eindeutig.
-- Personalisierung soll in Geschichte und mindestens 4 Stationen Interessen/Name sinnvoll aufgreifen.
+- child_card MUSS alleine spielbar sein: kurze Story + vollständige Aufgabe + alles, was Kinder wissen müssen.
+- puzzle_display enthält den tatsächlich druckbaren Rätselinhalt. Keine bloße Beschreibung dessen, was Eltern noch selbst erstellen sollen.
+- Nutze mindestens 6 unterschiedliche puzzle_type-Werte aus: {', '.join(PUZZLE_TYPES)}. Kein Typ häufiger als zweimal.
+- Enthalten sein müssen mindestens eine Beobachtungs-, eine Bewegungs-, eine Such- und eine Code- oder Logikstation.
+- Mindestens 3 Stationen müssen echte Kooperation erfordern. team_role vergibt wechselnde Rollen.
+- Pro Station zwei konkrete Hinweise: hint_1 sanft, hint_2 deutlich. Lösung immer eindeutig.
+- Personalisierung soll in Einstieg und mindestens 4 Stationen Interessen/Name sinnvoll aufgreifen.
 - indoor_fallback: konkrete Ersatzlösung für wetterabhängige Stationen, ohne neue Materialien.
-- party_schedule: 5-6 konkrete Zeitblöcke relativ zum Partybeginn, z.B. +00:00 Ankommen.
+- party_schedule: 5-6 konkrete Zeitblöcke relativ zum Partybeginn.
 - preparation: GENAU 8 Zeilen, eine pro Station, mit konkretem Ort, Versteck und Material.
 - Keine gefährlichen Aufgaben, kein Feuer, Strom, Straßenverkehr, gefährliches Klettern, scharfe Gegenstände oder verschlossene Räume.
 - Keine zwingenden Lebensmittel, keine Marken- oder Franchise-Figuren.
 - Verwende nur erlaubte Orte; Tabu-Orte strikt vermeiden.
-- route_check bestätigt Reihenfolge, Orte, Finale und Aufbau. quality_notes dokumentiert 4-8 kurze Selbstchecks.
-- Sprache warm, spannend, knapp. Kein KI-Jargon.
+- route_check bestätigt Reihenfolge, Orte, Finale und Aufbau. quality_notes dokumentiert 5-8 kurze Selbstchecks.
+- Sprache warm, spannend, knapp. Kein KI-Jargon, kein Schul-Arbeitsblatt-Ton.
+- audio_intro: 80-130 Wörter, direkt an {payload.get('child_name','das Geburtstagskind')} und das Team gerichtet; spannender Missionsstart, passend zum Thema und mindestens einem Interesse. Keine Regieanweisungen.
+- audio_finale: 60-100 Wörter, persönliche Gratulation, greift die Mission auf und nennt das Geburtstagskind. Keine Regieanweisungen.
 {correction}"""
 
 
@@ -139,15 +196,36 @@ def quality_gate(data, payload):
         errors.append("Es müssen genau 8 Stationen vorhanden sein.")
     if [s.get("number") for s in stations] != list(range(1, 9)):
         errors.append("Stationsnummern müssen exakt 1 bis 8 sein.")
-    if int(data.get("setup_minutes") or 999) > 20:
-        errors.append("Aufbauzeit liegt über 20 Minuten.")
+    if int(data.get("setup_minutes") or 999) > 10:
+        errors.append("Aufbauzeit liegt über 10 Minuten.")
+
+    target = _int(payload.get("desired_duration"), 45)
+    if target not in {30, 45, 60}:
+        target = 45
+    duration_bands = {30: (18, 28), 45: (28, 42), 60: (40, 55)}
+    low, high = duration_bands[target]
     durations = [int(s.get("duration_minutes") or 0) for s in stations]
-    if sum(durations) < 32 or sum(durations) > 52:
-        warnings.append(f"Stationszeit ungewöhnlich: {sum(durations)} Min.")
-    types = {s.get("puzzle_type") for s in stations}
+    station_minutes = sum(durations)
+    if station_minutes < low or station_minutes > high:
+        warnings.append(f"Stationszeit {station_minutes} Min. passt nur bedingt zum Ziel {target} Min.")
+
+    type_list = [s.get("puzzle_type") for s in stations]
+    types = set(type_list)
     if len(types) < 6:
         errors.append("Zu wenig Rätselvielfalt: mindestens 6 Typen erforderlich.")
-    teamwork = sum(1 for s in stations if s.get("puzzle_type") == "teamwork" or any(k in (s.get("team_role") or "").lower() for k in ["team", "gemeinsam", "sprecher", "wächter", "leser", "sucher"]))
+    for puzzle_type in types:
+        if puzzle_type and type_list.count(puzzle_type) > 2:
+            errors.append(f"Rätseltyp {puzzle_type} kommt öfter als zweimal vor.")
+    if "observation" not in types:
+        errors.append("Mindestens eine Beobachtungsstation erforderlich.")
+    if "movement" not in types:
+        errors.append("Mindestens eine Bewegungsstation erforderlich.")
+    if "search" not in types:
+        errors.append("Mindestens eine Suchstation erforderlich.")
+    if not ({"code", "logic"} & types):
+        errors.append("Mindestens eine Code- oder Logikstation erforderlich.")
+
+    teamwork = sum(1 for s in stations if s.get("puzzle_type") == "teamwork" or any(k in (s.get("team_role") or "").lower() for k in ["team", "gemeinsam", "sprecher", "wächter", "leser", "sucher", "chef"]))
     if teamwork < 3:
         errors.append("Mindestens 3 kooperative Stationen erforderlich.")
     for i, station in enumerate(stations, 1):
@@ -161,6 +239,11 @@ def quality_gate(data, payload):
         errors.append("Party-Zeitplan unvollständig.")
     if not data.get("indoor_fallback"):
         errors.append("Indoor-Plan B fehlt.")
+    if len(str(data.get("audio_intro") or "").split()) < 45:
+        errors.append("Audio-Einleitung fehlt oder ist zu kurz.")
+    if len(str(data.get("audio_finale") or "").split()) < 30:
+        errors.append("Audio-Finale fehlt oder ist zu kurz.")
+
     forbidden = [x.strip().lower() for x in re.split(r"[,;\n]", str(payload.get("forbidden_locations") or "")) if x.strip()]
     for i, station in enumerate(stations, 1):
         location_text = (str(station.get("current_location") or "") + " " + str(station.get("next_location") or "")).lower()
@@ -173,8 +256,10 @@ def quality_gate(data, payload):
         "metrics": {
             "puzzle_types": len(types),
             "team_stations": teamwork,
-            "station_minutes": sum(durations),
+            "station_minutes": station_minutes,
+            "target_minutes": target,
             "setup_minutes": data.get("setup_minutes"),
+            "audio_story": True,
         },
     }
 
@@ -189,7 +274,7 @@ def generate_quest(payload):
             model=model,
             input=build_prompt(payload, feedback),
             reasoning={"effort": "medium"},
-            max_output_tokens=12000,
+            max_output_tokens=16000,
             text={
                 "format": {
                     "type": "json_schema",
@@ -201,7 +286,11 @@ def generate_quest(payload):
                 "verbosity": "medium",
             },
         )
-        data = json.loads(response.output_text)
+        text = str(response.output_text or "").strip()
+        if not text:
+            feedback = "Antworte kompakter und direkt im verlangten JSON-Schema."
+            continue
+        data = json.loads(text)
         last_gate = quality_gate(data, payload)
         if last_gate["passed"]:
             data["quality_gate"] = last_gate
