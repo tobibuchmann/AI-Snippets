@@ -1,4 +1,5 @@
 import copy
+import os
 
 
 def apply_output_upgrade(module):
@@ -33,3 +34,21 @@ def apply_output_upgrade(module):
         return base_renderer(normalized, payload)
 
     module.structured_pdf_bytes = structured_pdf_bytes
+
+    # Expose a non-sensitive deployment marker so the live backend can be checked
+    # without revealing keys or configuration values.
+    previous_health = module.app.view_functions.get("health")
+    if previous_health:
+        def upgraded_health():
+            response = previous_health()
+            try:
+                data = response.get_json() or {}
+            except Exception:
+                data = {"ok": True}
+            data["product_upgrade"] = module.app.config.get("GQ_PRODUCT_UPGRADE", "unknown")
+            data["adaptive_difficulty"] = True
+            data["personalized_audio"] = True
+            data["tts_model"] = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+            return module.jsonify(data)
+
+        module.app.view_functions["health"] = upgraded_health
