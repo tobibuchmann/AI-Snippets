@@ -102,6 +102,11 @@ def accepted(value):
     return str(value or "").strip().lower() in {"yes", "on", "true", "1"}
 
 
+def allowed(value, choices, fallback):
+    value = str(value or "").strip()
+    return value if value in choices else fallback
+
+
 @app.get("/health")
 def health():
     return jsonify({
@@ -113,13 +118,17 @@ def health():
         "stripe_webhook_configured": bool(os.getenv("STRIPE_WEBHOOK_SECRET")),
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "database": "postgres" if "postgresql" in DATABASE_URL else "temporary_sqlite",
+        "adaptive_order_fields": True,
     })
 
 
 @app.post("/api/orders")
 def create_order():
     data = request.get_json(silent=True) or {}
-    required = ["child_name", "age", "group_size", "theme", "play_area", "email"]
+    required = [
+        "child_name", "age", "group_size", "theme", "play_area", "email",
+        "reading_level", "math_level", "difficulty", "activity_level", "desired_duration",
+    ]
     missing = [k for k in required if not str(data.get(k, "")).strip()]
     if missing:
         return jsonify({"error": "missing_fields", "fields": missing}), 400
@@ -134,6 +143,12 @@ def create_order():
     if not isinstance(locations, list) or not locations:
         return jsonify({"error": "locations_required"}), 400
 
+    reading_level = allowed(data.get("reading_level"), {"vorlesen", "kurze_saetze", "sicher"}, "kurze_saetze")
+    math_level = allowed(data.get("math_level"), {"ohne", "bis20", "bis100", "altersgerecht"}, "altersgerecht")
+    difficulty = allowed(data.get("difficulty"), {"leicht", "ausgewogen", "knifflig"}, "ausgewogen")
+    activity_level = allowed(data.get("activity_level"), {"ruhig", "ausgewogen", "viel"}, "ausgewogen")
+    desired_duration = allowed(data.get("desired_duration"), {"30", "45", "60"}, "45")
+
     order_id = "gq_" + uuid.uuid4().hex[:20]
     created = now_iso()
     payload = {
@@ -141,6 +156,11 @@ def create_order():
         "age": str(data.get("age", ""))[:10],
         "group_size": str(data.get("group_size", ""))[:10],
         "interests": str(data.get("interests", ""))[:1000],
+        "reading_level": reading_level,
+        "math_level": math_level,
+        "difficulty": difficulty,
+        "activity_level": activity_level,
+        "desired_duration": desired_duration,
         "theme": str(data.get("theme", ""))[:120],
         "play_area": str(data.get("play_area", ""))[:120],
         "locations": [str(x)[:120] for x in locations[:20]],
@@ -150,10 +170,10 @@ def create_order():
         "notes": str(data.get("notes", ""))[:2000],
         "privacy_notice_acknowledged": True,
         "privacy_notice_acknowledged_at": created,
-        "privacy_notice_version": "2026-09-30-v1",
+        "privacy_notice_version": "2026-10-06-v2",
         "digital_content_consent": True,
         "digital_content_consent_at": created,
-        "digital_content_consent_version": "2026-09-30-v1",
+        "digital_content_consent_version": "2026-10-06-v2",
     }
 
     with engine.begin() as conn:
@@ -260,83 +280,33 @@ def verify_paid(order_id, session_id):
     return True, session
 
 
-@app.get("/api/checkout-status")
-def checkout_status():
-    order_id = request.args.get("order_id", "")
-    session_id = request.args.get("session_id", "")
-    ok, result = verify_paid(order_id, session_id)
-    if not ok:
-        code = 503 if result == "payment_verification_not_configured" else 402
-        return jsonify({"paid": False, "error": result}), code
-    return jsonify({"paid": True, "order_id": order_id})
-
-
-@app.post("/api/generate")
-def generate():
-    if OpenAI is None or not os.getenv("OPENAI_API_KEY"):
-        return jsonify({"error": "generation_not_configured"}), 503
-
+@app.post("/api/verify-payment")
+def verify_payment():
     data = request.get_json(silent=True) or {}
     order_id = str(data.get("order_id", ""))
     session_id = str(data.get("session_id", ""))
-    ok, result = verify_paid(order_id, session_id)
+    if not order_id or not session_id:
+        return jsonify({"error": "missing_fields"}), 400
+    try:
+        ok, result = verify_paid(order_id, session_id)
+    except Exception:
+        return jsonify({"error": "payment_verification_failed"}), 500
     if not ok:
-        return jsonify({"error": result}), 402
+        return jsonify({"error": result}), 400
+    return jsonify({"paid": True, "order_id": order_id, "session_id": session_id})
 
+
+@app.get("/api/orders/<order_id>")
+def order_status(order_id):
     order = get_order(order_id)
-    payload = json.loads(order["payload"])
-    prompt = f"""Du bist Autor und Spieldesigner für hochwertige, sichere Kindergeburtstage.
-Erstelle ein vollständig spielbares, personalisiertes Geburtstags-Abenteuer mit genau 8 Stationen und etwa 45–60 Minuten Spielzeit.
-
-Daten:
-Geburtstagskind: {payload['child_name']}
-Alter: {payload['age']}
-Gruppengröße: {payload['group_size']}
-Interessen: {payload['interests']}
-Thema: {payload['theme']}
-Spielbereich: {payload['play_area']}
-Nutzbare Orte: {', '.join(payload['locations'])}
-Weitere Orte: {payload['other_locations']}
-Tabu-Orte: {payload['forbidden_locations']}
-Finale: {payload['final_location']}
-Hinweise: {payload['notes']}
-
-Vorgaben:
-- Geburtstagskind zentral und positiv einbinden.
-- Genau 8 Stationen; jede führt eindeutig zur nächsten.
-- Mix aus Logik, Beobachtung, Bewegung, Kooperation, Codes sowie Wort-/Zahlenrätseln.
-- Nur erlaubte Orte verwenden.
-- Kein Feuer, keine Elektrizität, keine Straße, kein gefährliches Klettern, keine scharfen Gegenstände, keine verschlossenen Räume.
-- Keine bekannten Franchise-Figuren oder geschützten Welten.
-- Keine Lebensmittel als zwingende Mechanik.
-- Lösungen eindeutig und altersgerecht.
-
-Ausgabe in sauberem Markdown:
-1. Titel
-2. Kurzbeschreibung für Eltern
-3. Materialliste
-4. Vorbereitungstabelle
-5. Einstiegsgeschichte (max. 300 Wörter)
-6. Station 1–8 jeweils mit Geschichte, Kinderkarte, Aufgabe, Elternlösung, nächstem Ort, Tipp
-7. Finale
-8. Persönliche Urkunde
-9. 10-Minuten-Zusatzspiel
-10. Endprüfung der Route und Lösungen.
-"""
-
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
-    response = client.responses.create(model=model, input=prompt)
-    generated = response.output_text
-
-    with engine.begin() as conn:
-        conn.execute(text("""
-            UPDATE orders SET generated_text=:generated_text, status='generated', updated_at=:updated_at
-            WHERE id=:id
-        """), {"generated_text": generated, "updated_at": now_iso(), "id": order_id})
-
-    return jsonify({"order_id": order_id, "status": "generated", "content": generated})
+    if not order:
+        return jsonify({"error": "order_not_found"}), 404
+    return jsonify({
+        "order_id": order["id"],
+        "status": order["status"],
+        "child_name": order["child_name"],
+    })
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
