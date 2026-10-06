@@ -334,6 +334,24 @@ def _repair_quest(client, model, data, payload, feedback, repair_attempt):
     return _parse_response_json(response, f"quest repair attempt {repair_attempt}")
 
 
+
+def _factual_quality_notes(data, payload, gate):
+    metrics = gate.get("metrics") or {}
+    types = metrics.get("puzzle_types", 0)
+    active = sum(1 for s in (data.get("stations") or []) if s.get("puzzle_type") in {"movement", "search", "teamwork"})
+    movement = sum(1 for s in (data.get("stations") or []) if s.get("puzzle_type") == "movement")
+    notes = [
+        f"Genau 8 Stationen; Zielspielzeit ca. {metrics.get('target_minutes', payload.get('desired_duration', '?'))} Minuten.",
+        f"{types} unterschiedliche Rätseltypen; kein Rätseltyp häufiger als zweimal.",
+        f"{metrics.get('team_stations', '?')} kooperative Stationen; {active} aktive Stationen, davon {movement} Bewegungsstationen.",
+        f"Personalisierung in {metrics.get('personalized_stations', '?')} Stationen plus Einstieg und Finale.",
+        f"{metrics.get('printable_pieces', 0)} mitgelieferte Ausschneideteile; keine selbst zu beschriftenden Rätselrequisiten nötig.",
+        f"Geprüfte Route, zwei Hinweisstufen je Station und Aufbauzeit ca. {metrics.get('setup_minutes', '?')} Minuten.",
+    ]
+    if str(payload.get("math_level") or "") == "ohne":
+        notes.append("Keine Rechenaufgaben; Zahlen dienen höchstens als Reihenfolge oder Codeschlüssel.")
+    return notes
+
 def generate_quest(payload):
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=240.0)
     model = os.getenv("OPENAI_MODEL", "gpt-6-luna")
@@ -387,6 +405,7 @@ def generate_quest(payload):
 
         if rule_gate["passed"] and _critic_core_passed(critic):
             logger.warning("Quest passed QA on full attempt=%s", attempt)
+            data["quality_notes"] = _factual_quality_notes(data, payload, rule_gate)
             data["quality_gate"] = {
                 **rule_gate,
                 "semantic_critic": {
@@ -436,6 +455,7 @@ def generate_quest(payload):
                 logger.warning(
                     "Quest passed QA after targeted repair attempt=%s", repair_attempt
                 )
+                repaired["quality_notes"] = _factual_quality_notes(repaired, payload, repaired_gate)
                 repaired["quality_gate"] = {
                     **repaired_gate,
                     "semantic_critic": {
