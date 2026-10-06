@@ -55,11 +55,12 @@ QUEST_SCHEMA = {
                     "hint_2": {"type": "string"},
                     "team_role": {"type": "string"},
                     "duration_minutes": {"type": "integer"},
+                    "printable_pieces": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": [
                     "number", "title", "current_location", "next_location", "story",
                     "child_card", "puzzle_type", "puzzle_display", "task", "solution",
-                    "hint_1", "hint_2", "team_role", "duration_minutes",
+                    "hint_1", "hint_2", "team_role", "duration_minutes", "printable_pieces",
                 ],
             },
         },
@@ -128,7 +129,7 @@ def adaptive_profile(payload):
     activity = {
         "ruhig": "Bewegung sparsam; Schwerpunkt Beobachtung, Suchen, Codes und Teamlogik.",
         "ausgewogen": "Ruhige Denkaufgaben und aktive Such-/Bewegungsstationen abwechseln.",
-        "viel": "Mindestens drei aktive Such-/Bewegungsstationen, ohne Rennen, Klettern oder riskante Aktionen.",
+        "viel": "Mindestens vier klar aktive Stationen; davon mindestens zwei Bewegungsstationen. Suchen, körperliches Teamwork und sichere Bewegung bevorzugen, ohne Rennen, Klettern oder riskante Aktionen.",
     }.get(str(payload.get("activity_level") or ""), "Ruhige und aktive Stationen ausgewogen abwechseln.")
     return "\n".join([
         f"ALTER: {age_profiles[age]}",
@@ -161,6 +162,7 @@ Tabu-Orte: {payload.get('forbidden_locations','')}
 Finale/Schatz: {payload.get('final_location','')}
 Gewünschte Dauer: ca. {target_duration} Minuten
 Besondere Hinweise: {payload.get('notes','')}
+Vom Kunden ausdrücklich genannte konkrete Verstecke/Möbel: {payload.get('available_hiding_spots','')}
 
 ADAPTIVES NIVEAUPROFIL
 {adaptive_profile(payload)}
@@ -169,21 +171,27 @@ PREMIUM-REGELN
 - GENAU 8 Stationen; Einstieg, Stationen und Finale zusammen ungefähr {target_duration} Minuten.
 - setup_minutes realistisch <= 10. Nutze überwiegend Papier, Stifte und Alltagsgegenstände.
 - Jede Station nennt current_location UND next_location. Station 8 führt zum Finale.
-- child_card MUSS alleine spielbar sein: kurze Story + vollständige Aufgabe + alles, was Kinder wissen müssen.
+- child_card MUSS alleine spielbar sein: kurze Story + vollständige Aufgabe + alles, was Kinder wissen müssen. Bei Lesestufe "kurze_saetze" höchstens ca. 45 Wörter pro child_card; bei "vorlesen" noch kürzer.
 - puzzle_display enthält den tatsächlich druckbaren Rätselinhalt. Keine bloße Beschreibung dessen, was Eltern noch selbst erstellen sollen.
+- printable_pieces enthält ALLE zusätzlichen Ausschneideteile, die für diese Station benötigt werden. Wenn keine benötigt werden: leere Liste. Eltern dürfen niemals selbst Buchstaben, Eier, Fossilien, Karten oder Codes basteln/beschriften müssen.
+- Insgesamt höchstens 8 printable_pieces über die ganze Quest und höchstens 2 Stationen mit solchen Teilen. Bevorzuge selbsterklärende Karten und Bewegung statt Bastelmaterial.
 - Nutze mindestens 6 unterschiedliche puzzle_type-Werte aus: {', '.join(PUZZLE_TYPES)}. Kein Typ häufiger als zweimal.
 - Enthalten sein müssen mindestens eine Beobachtungs-, eine Bewegungs-, eine Such- und eine Code- oder Logikstation.
 - Mindestens 3 Stationen müssen echte Kooperation erfordern. team_role vergibt wechselnde Rollen.
 - Pro Station zwei konkrete Hinweise: hint_1 sanft, hint_2 deutlich. Lösung immer eindeutig.
-- Personalisierung soll in Einstieg und mindestens 4 Stationen Interessen/Name sinnvoll aufgreifen.
+- Personalisierung ist Kern des Produkts: Name und konkrete Interessen müssen in Einstieg UND mindestens 4 Stationen inhaltlich sinnvoll vorkommen. Nicht nur den Namen voranstellen; Aufgaben oder Storydetails müssen sich erkennbar auf die Angaben beziehen.
+- Die 8 Stationen bilden EINE zusammenhängende Geschichte mit erkennbarem Fortschritt: Auftrag am Anfang, Zwischenentwicklung ungefähr in der Mitte und konkreter Abschluss im Finale. Das Thema darf nicht nur Dekoration sein.
 - indoor_fallback: konkrete Ersatzlösung für wetterabhängige Stationen, ohne neue Materialien.
 - party_schedule: 5-6 konkrete Zeitblöcke relativ zum Partybeginn.
 - preparation: GENAU 8 Zeilen, eine pro Station, mit konkretem Ort, Versteck und Material.
+- Erfinde KEINE Möbel, Behälter oder Requisiten, die der Kunde nicht ausdrücklich genannt hat. Wenn nur ein Raum/Ort genannt ist, formuliere eine sofort ausführbare Platzierung ohne Möbelannahme, z.B. "mit Klebestreifen an einer sicheren Stelle auf Kinderhöhe im Flur". Verwende konkrete Möbel nur aus "konkrete Verstecke/Möbel".
 - Keine gefährlichen Aufgaben, kein Feuer, Strom, Straßenverkehr, gefährliches Klettern, scharfe Gegenstände oder verschlossene Räume.
 - Keine zwingenden Lebensmittel, keine Marken- oder Franchise-Figuren.
 - Verwende nur erlaubte Orte; Tabu-Orte strikt vermeiden.
 - route_check bestätigt Reihenfolge, Orte, Finale und Aufbau. quality_notes dokumentiert 5-8 kurze Selbstchecks.
-- Sprache warm, spannend, knapp. Kein KI-Jargon, kein Schul-Arbeitsblatt-Ton.
+- Sprache warm, spannend, knapp und vollständig deutsch. Keine versehentlichen englischen Wörter wie "and".
+- Leite aus dem Vornamen KEIN Geschlecht ab. Verwende geschlechtsneutrale Rollen und Urkundentexte wie "Dino-Profi", "Expeditionsprofi" oder den Namen.
+- Kein KI-Jargon, kein Schul-Arbeitsblatt-Ton.
 - audio_intro: 80-130 Wörter, direkt an {payload.get('child_name','das Geburtstagskind')} und das Team gerichtet; spannender Missionsstart, passend zum Thema und mindestens einem Interesse. Keine Regieanweisungen.
 - audio_finale: 60-100 Wörter, persönliche Gratulation, greift die Mission auf und nennt das Geburtstagskind. Keine Regieanweisungen.
 {correction}"""
@@ -226,13 +234,45 @@ def quality_gate(data, payload):
         errors.append("Mindestens eine Code- oder Logikstation erforderlich.")
 
     teamwork = sum(1 for s in stations if s.get("puzzle_type") == "teamwork" or any(k in (s.get("team_role") or "").lower() for k in ["team", "gemeinsam", "sprecher", "wächter", "leser", "sucher", "chef"]))
+    if str(payload.get("activity_level") or "") == "viel":
+        active = sum(1 for s in stations if s.get("puzzle_type") in {"movement", "search", "teamwork"})
+        movement = sum(1 for s in stations if s.get("puzzle_type") == "movement")
+        if active < 4:
+            errors.append("Bei viel Bewegung sind mindestens 4 aktive Stationen erforderlich.")
+        if movement < 2:
+            errors.append("Bei viel Bewegung sind mindestens 2 Bewegungsstationen erforderlich.")
     if teamwork < 3:
         errors.append("Mindestens 3 kooperative Stationen erforderlich.")
+    child_name_norm = re.sub(r"[^a-z0-9]+", "", str(payload.get("child_name") or "").lower())
+    personalized_stations = 0
+    total_printables = 0
+    printable_stations = 0
+    generated_texts = []
     for i, station in enumerate(stations, 1):
         if not str(station.get("child_card") or "").strip() or not str(station.get("puzzle_display") or "").strip():
             errors.append(f"Station {i} ist nicht druckfertig.")
         if not str(station.get("hint_1") or "").strip() or not str(station.get("hint_2") or "").strip():
             errors.append(f"Station {i} benötigt zwei Hinweise.")
+        combined = " ".join(str(station.get(k) or "") for k in ["story", "child_card", "task", "puzzle_display"])
+        generated_texts.append(combined)
+        if child_name_norm and child_name_norm in re.sub(r"[^a-z0-9]+", "", combined.lower()):
+            personalized_stations += 1
+        pieces = station.get("printable_pieces") or []
+        total_printables += len(pieces)
+        if pieces:
+            printable_stations += 1
+        if str(payload.get("reading_level") or "") == "kurze_saetze" and len(str(station.get("child_card") or "").split()) > 48:
+            errors.append(f"Station {i}: Kinderkarte ist für kurze Sätze zu textreich.")
+    if child_name_norm and personalized_stations < 4:
+        errors.append("Personalisierung zu schwach: Name fehlt in mindestens 4 Stationen.")
+    if total_printables > 8:
+        errors.append("Zu viele Ausschneideteile (>8 insgesamt).")
+    if printable_stations > 2:
+        errors.append("Zu viele Stationen mit Ausschneideteilen (>2).")
+    if str(payload.get("math_level") or "") == "ohne" and "number" in types:
+        errors.append("Bei 'ohne Rechnen' darf kein Zahlenrätseltyp verwendet werden.")
+    if any(" and " in (" " + txt.lower() + " ") for txt in generated_texts + [str(data.get("intro_story") or ""), str(data.get("finale") or "")]):
+        errors.append("Deutschsprachiger Text enthält versehentlich das englische Wort 'and'.")
     if len(data.get("preparation") or []) != 8:
         errors.append("Vorbereitung muss genau 8 Stationen enthalten.")
     if len(data.get("party_schedule") or []) < 5:
@@ -260,6 +300,8 @@ def quality_gate(data, payload):
             "target_minutes": target,
             "setup_minutes": data.get("setup_minutes"),
             "audio_story": True,
+            "personalized_stations": personalized_stations,
+            "printable_pieces": total_printables,
         },
     }
 
