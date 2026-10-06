@@ -178,9 +178,9 @@ class ChildCardArt(Flowable):
         yy=role_y-8*mm
         c.setFillColor(colors.white); c.setStrokeColor(t['main']); c.setLineWidth(1.4); c.roundRect(12*mm,26*mm,w-24*mm,max(44*mm,yy-25*mm),6*mm,stroke=1,fill=1)
         c.setFillColor(t['main']); c.setFont('Helvetica-Bold',11); c.drawString(20*mm,yy-5*mm,'EURE AUFGABE')
-        task=s.get('task') or s.get('child_card') or 'Löst das Rätsel gemeinsam.'
-        c.setFillColor(INK); c.setFont('Helvetica-Bold',11); ty=yy-15*mm
-        for ln in wrap(c,task,'Helvetica-Bold',11,w-42*mm)[:12]: c.drawString(20*mm,ty,ln); ty-=5.7*mm
+        task=s.get('puzzle_display') or s.get('task') or s.get('child_card') or 'Löst das Rätsel gemeinsam.'
+        c.setFillColor(INK); c.setFont('Helvetica-Bold',10); ty=yy-15*mm
+        for ln in wrap(c,task,'Helvetica-Bold',10,w-42*mm)[:16]: c.drawString(20*mm,ty,ln); ty-=5.2*mm
         c.setFillColor(t['dark']); c.setFont('Helvetica-Bold',8); c.drawCentredString(w/2,12*mm,'Wenn ihr die Lösung habt, kennt ihr den nächsten Ort!')
 
 class CertificateArt(Flowable):
