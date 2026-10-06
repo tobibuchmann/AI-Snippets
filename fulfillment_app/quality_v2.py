@@ -1,10 +1,13 @@
 import json
+import logging
 import os
 import re
 
 from openai import OpenAI
 
 from . import premium
+
+logger = logging.getLogger("geburtstagsquest.quality_v2")
 
 
 CRITIC_SCHEMA = {
@@ -257,17 +260,17 @@ def _repair_quest(client, model, data, payload, feedback, repair_attempt):
 
 
 def generate_quest(payload):
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=300.0)
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=240.0)
     model = os.getenv("OPENAI_MODEL", "gpt-6-luna")
-    feedback = ""
-    last_feedback = ""
     response_errors = []
+    feedback = ""
 
-    # High reasoning was able to consume the full output budget before emitting JSON.
-    # Use medium by default and a low-effort recovery pass if output is empty/incomplete.
-    generation_profiles = (("medium", 18000), ("medium", 20000), ("low", 22000))
+    # Fast premium path: one complete draft, then targeted repairs.
+    # A second complete draft is only used when targeted repair cannot recover quality.
+    generation_profiles = (("medium", 18000), ("low", 20000))
 
     for attempt, (effort, budget) in enumerate(generation_profiles, 1):
+        logger.warning("Quest generation full attempt=%s started", attempt)
         response = client.responses.create(
             model=model,
             input=_enhanced_prompt(payload, feedback),
@@ -288,9 +291,10 @@ def generate_quest(payload):
             data = _parse_response_json(response, f"quest generation attempt {attempt}")
         except RuntimeError as exc:
             response_errors.append(str(exc))
+            logger.warning("Quest generation full attempt=%s returned unreadable output", attempt)
             feedback = (
-                "Die vorige Modellantwort war leer oder unvollständig. Antworte diesmal direkt und kompakt im verlangten JSON-Schema; "
-                "verwende kurze Storytexte und kurze, vollständige Rätselkarten."
+                "Die vorige Modellantwort war leer oder unvollständig. Antworte diesmal direkt und kompakt "
+                "im verlangten JSON-Schema; verwende kurze Storytexte und kurze, vollständige Rätselkarten."
             )
             continue
 
@@ -299,11 +303,15 @@ def generate_quest(payload):
             critic = semantic_critic(client, model, data, payload)
         except RuntimeError as exc:
             response_errors.append(str(exc))
-            # The deterministic gate is still valuable, but a missing critic must not silently pass.
-            feedback = "Semantische Qualitätsprüfung konnte nicht gelesen werden. Erzeuge die Quest nochmals besonders eindeutig und kompakt."
+            logger.warning("Semantic critic failed after full attempt=%s", attempt)
+            feedback = (
+                "Die semantische Qualitätsprüfung konnte nicht gelesen werden. Erzeuge die Quest nochmals "
+                "besonders eindeutig und kompakt."
+            )
             continue
 
         if rule_gate["passed"] and critic.get("passed"):
+            logger.warning("Quest passed QA on full attempt=%s", attempt)
             data["quality_gate"] = {
                 **rule_gate,
                 "semantic_critic": {
@@ -314,55 +322,71 @@ def generate_quest(payload):
                     "stories_varied": critic.get("stories_varied"),
                     "preparation_concrete": critic.get("preparation_concrete"),
                 },
+                "repaired": False,
+                "repair_attempts": 0,
             }
             return json.dumps(data, ensure_ascii=False)
 
-        last_feedback = _feedback_from_checks(rule_gate, critic)
-        feedback = last_feedback
+        repair_feedback = _feedback_from_checks(rule_gate, critic)
+        logger.warning(
+            "Quest full attempt=%s failed QA; starting targeted repair", attempt
+        )
 
-        # Ab dem zweiten vollständigen Entwurf nicht immer alles neu erfinden:
-        # gezielt den vorhandenen Entwurf reparieren und erneut durch beide Gates schicken.
-        if attempt >= 2 and last_feedback:
-            repaired = data
-            repair_feedback = last_feedback
-            for repair_attempt in range(1, 4):
-                try:
-                    repaired = _repair_quest(
-                        client, model, repaired, payload, repair_feedback, repair_attempt
-                    )
-                except RuntimeError as exc:
-                    response_errors.append(str(exc))
-                    continue
+        # Repair the existing good parts instead of regenerating all eight stations.
+        repaired = data
+        for repair_attempt in range(1, 3):
+            logger.warning(
+                "Quest targeted repair attempt=%s after full attempt=%s started",
+                repair_attempt, attempt
+            )
+            try:
+                repaired = _repair_quest(
+                    client, model, repaired, payload, repair_feedback, repair_attempt
+                )
+            except RuntimeError as exc:
+                response_errors.append(str(exc))
+                logger.warning("Targeted repair attempt=%s returned unreadable output", repair_attempt)
+                continue
 
-                repaired_gate = deterministic_gate(repaired, payload)
-                try:
-                    repaired_critic = semantic_critic(client, model, repaired, payload)
-                except RuntimeError as exc:
-                    response_errors.append(str(exc))
-                    continue
+            repaired_gate = deterministic_gate(repaired, payload)
+            try:
+                repaired_critic = semantic_critic(client, model, repaired, payload)
+            except RuntimeError as exc:
+                response_errors.append(str(exc))
+                logger.warning("Semantic critic failed after repair attempt=%s", repair_attempt)
+                continue
 
-                if repaired_gate["passed"] and repaired_critic.get("passed"):
-                    repaired["quality_gate"] = {
-                        **repaired_gate,
-                        "semantic_critic": {
-                            "passed": True,
-                            "route_chain_valid": repaired_critic.get("route_chain_valid"),
-                            "personalization_strong": repaired_critic.get("personalization_strong"),
-                            "team_roles_varied": repaired_critic.get("team_roles_varied"),
-                            "stories_varied": repaired_critic.get("stories_varied"),
-                            "preparation_concrete": repaired_critic.get("preparation_concrete"),
-                        },
-                        "repaired": True,
-                        "repair_attempts": repair_attempt,
-                    }
-                    return json.dumps(repaired, ensure_ascii=False)
+            if repaired_gate["passed"] and repaired_critic.get("passed"):
+                logger.warning(
+                    "Quest passed QA after targeted repair attempt=%s", repair_attempt
+                )
+                repaired["quality_gate"] = {
+                    **repaired_gate,
+                    "semantic_critic": {
+                        "passed": True,
+                        "route_chain_valid": repaired_critic.get("route_chain_valid"),
+                        "personalization_strong": repaired_critic.get("personalization_strong"),
+                        "team_roles_varied": repaired_critic.get("team_roles_varied"),
+                        "stories_varied": repaired_critic.get("stories_varied"),
+                        "preparation_concrete": repaired_critic.get("preparation_concrete"),
+                    },
+                    "repaired": True,
+                    "repair_attempts": repair_attempt,
+                }
+                return json.dumps(repaired, ensure_ascii=False)
 
-                repair_feedback = _feedback_from_checks(repaired_gate, repaired_critic)
-                last_feedback = repair_feedback
+            repair_feedback = _feedback_from_checks(repaired_gate, repaired_critic)
+            logger.warning(
+                "Quest targeted repair attempt=%s still failed QA", repair_attempt
+            )
 
-    details = last_feedback or " | ".join(response_errors[-3:])
-    raise RuntimeError("Premium semantic QA failed after generation and targeted repair attempts: " + details[:3500])
+        # Only now spend time on one fresh full draft, seeded with the latest QA feedback.
+        feedback = repair_feedback
 
+    details = feedback or " | ".join(response_errors[-3:])
+    raise RuntimeError(
+        "Premium semantic QA failed after fast generation/repair pipeline: " + details[:3500]
+    )
 
 def install(legacy):
     legacy.generate_quest = generate_quest
