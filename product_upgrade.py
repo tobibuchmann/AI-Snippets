@@ -403,7 +403,16 @@ def _send_email_with_audio(module, to_email, pdf_bytes, order_id):
 
     from_email = os.environ["RESEND_FROM_EMAIL"]
     test_recipient = os.getenv("RESEND_TEST_RECIPIENT", "").strip()
-    actual = test_recipient if "resend.dev" in from_email.lower() and test_recipient else to_email
+    recipient_lower = str(to_email or "").strip().lower()
+    reserved_test_domain = recipient_lower.endswith(("@example.com", "@example.org", "@example.net", ".test", ".invalid"))
+    if reserved_test_domain:
+        # Never try to deliver synthetic QA orders to reserved internet domains.
+        # Resend's official sink accepts the request without emailing a real person.
+        actual = test_recipient or "delivered@resend.dev"
+    elif "resend.dev" in from_email.lower() and test_recipient:
+        actual = test_recipient
+    else:
+        actual = to_email
 
     digest = hashlib.sha256(pdf_bytes)
     for attachment in audio_attachments:
