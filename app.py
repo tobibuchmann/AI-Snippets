@@ -318,6 +318,31 @@ def order_by_session():
     })
 
 
+@app.get("/api/qa-review-by-session")
+def qa_review_by_session():
+    """Temporary, synthetic-order-only QA endpoint. Never exposes real customer orders."""
+    session_id = str(request.args.get("session_id", "")).strip()
+    if not session_id:
+        return jsonify({"error": "session_id_required"}), 400
+    with engine.begin() as conn:
+        row = conn.execute(text("""
+            SELECT id, email, child_name, payload, status, generated_text
+            FROM orders
+            WHERE stripe_session_id=:session_id
+            LIMIT 1
+        """), {"session_id": session_id}).mappings().first()
+    if not row:
+        return jsonify({"error": "order_not_found"}), 404
+    if row["email"] != "quest-test@example.com" or row["child_name"] != "TestEmma":
+        return jsonify({"error": "synthetic_test_only"}), 403
+    return jsonify({
+        "order_id": row["id"],
+        "status": row["status"],
+        "payload": json.loads(row["payload"]),
+        "generated_text": row["generated_text"],
+    })
+
+
 @app.post("/api/generate")
 def generate():
     if OpenAI is None or not os.getenv("OPENAI_API_KEY"):
