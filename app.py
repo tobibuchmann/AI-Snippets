@@ -343,6 +343,27 @@ def qa_review_by_session():
     })
 
 
+@app.get("/api/qa-review-testemma")
+def qa_review_testemma():
+    """Temporary synthetic QA endpoint for the single TestEmma order."""
+    with engine.begin() as conn:
+        row = conn.execute(text("""
+            SELECT id, email, child_name, payload, status, generated_text
+            FROM orders
+            WHERE email='quest-test@example.com' AND child_name='TestEmma'
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """)).mappings().first()
+    if not row:
+        return jsonify({"error": "synthetic_order_not_found"}), 404
+    return jsonify({
+        "order_id": row["id"],
+        "status": row["status"],
+        "payload": json.loads(row["payload"]),
+        "generated_text": row["generated_text"],
+    })
+
+
 @app.post("/api/generate")
 def generate():
     if OpenAI is None or not os.getenv("OPENAI_API_KEY"):
