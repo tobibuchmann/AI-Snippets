@@ -34,6 +34,19 @@ install_quality_v2(_legacy)
 install_theme_art(_legacy)
 install_demo_pdf(_legacy)
 
+# Apply cross-cutting product upgrades to the actual legacy module that owns
+# fulfillment(), send_email() and structured_pdf_bytes(). Applying them to this
+# package object would not affect the route/worker functions.
+try:
+    from product_upgrade import apply_upgrade
+    from premium_output_upgrade import apply_output_upgrade
+
+    apply_upgrade(_legacy)
+    apply_output_upgrade(_legacy)
+    _legacy.app.logger.warning("GeburtstagsQuest adaptive/audio delivery upgrade enabled on legacy worker")
+except Exception:
+    _legacy.app.logger.exception("GeburtstagsQuest product upgrade setup failed")
+
 try:
     from qa_preview import install_preview
     install_preview(_legacy)
